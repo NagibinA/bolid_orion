@@ -1,11 +1,10 @@
 send_command:
   name: Send Orion Command
-  description: Отправляет команду устройству Болид через шлюз
+  description: Отправляет команду устройству через шлюз
   fields:
     command:
       name: Command
-      description: "Команда в формате: адрес;длина;ключ;команда;данные..."
-      example: "2;6;0;13;0;0"
+      description: "Команда в формате: адрес;длина;ключ;команда;данные"
       required: true
       example: "2;6;0;13;0;0"
       selector:
