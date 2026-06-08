@@ -1,0 +1,9 @@
+{
+  "name": "Bolid Orion Protocol",
+  "render_readme": true,
+  "domains": ["sensor"],
+  "country": "RU",
+  "homeassistant": "2024.1.0",
+  "iot_class": "Local Push",
+  "zip_release": false
+}
