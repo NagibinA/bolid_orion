@@ -5,9 +5,10 @@ from homeassistant.components.sensor import SensorEntity
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
-from .const import DOMAIN, DEVICE_TYPES
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+
 
 async def async_setup_entry(hass, entry, async_add_entities):
     """Настройка сенсоров"""
@@ -22,10 +23,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
     
     @callback
     def async_add_device(address, device_info):
-        """Добавление нового сенсора при обнаружении"""
+        """Добавление нового сенсора"""
         for entity in entities:
             if entity.address == address:
-                entity.update_device_info(device_info)
+                entity.update_info(device_info)
                 return
         new_sensor = OrionDeviceSensor(address, device_info)
         entities.append(new_sensor)
@@ -40,20 +41,35 @@ class OrionDeviceSensor(SensorEntity):
     def __init__(self, address: int, device_info: dict):
         self.address = address
         self._device_info = device_info
-        self._attr_name = f"Orion Device {address}"
-        self._attr_unique_id = f"{DOMAIN}_device_{address}_type"
-        self._attr_icon = "mdi:chip"
+        self._device_name = device_info.get("name", "Неизвестный прибор")
+        self._firmware = device_info.get("firmware", "unknown")
         
-        # Состояние сенсора = название прибора
-        self._attr_native_value = device_info.get("name", "Неизвестный прибор")
-    
+        # Название сенсора: "С2000-БКИ (адрес 2)"
+        self._attr_name = f"{self._device_name} (адрес {address})"
+        self._attr_unique_id = f"{DOMAIN}_device_{address}"
+        self._attr_icon = "mdi:chip"
+        self._attr_native_value = self._device_name
+        
+        # Атрибуты
+        self._attr_extra_state_attributes = {
+            "address": address,
+            "firmware": self._firmware,
+        }
+
     @property
     def should_poll(self):
         return False
-    
+
     @callback
-    def update_device_info(self, device_info: dict):
+    def update_info(self, device_info: dict):
         """Обновление информации об устройстве"""
-        self._device_info = device_info
-        self._attr_native_value = device_info.get("name", "Неизвестный прибор")
+        self._device_name = device_info.get("name", "Неизвестный прибор")
+        self._firmware = device_info.get("firmware", "unknown")
+        
+        self._attr_name = f"{self._device_name} (адрес {self.address})"
+        self._attr_native_value = self._device_name
+        self._attr_extra_state_attributes = {
+            "address": self.address,
+            "firmware": self._firmware,
+        }
         self.async_write_ha_state()
