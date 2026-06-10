@@ -6,8 +6,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 
-from .const import DOMAIN, ORION_DEVICE_TYPES, DPLS_DEVICE_TYPES
-from .const import RSP_ORION, RSP_DPLS, SIGNAL_STATUS_UPDATE
+from .const import DOMAIN, ORION_DEVICE_TYPES, DPLS_DEVICE_TYPES, STATUS_CODES
+from .const import RSP_ORION, RSP_DPLS, RSP_STATUS, SIGNAL_STATUS_UPDATE
 from .mqtt_client import OrionMQTTClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -108,6 +108,18 @@ async def scan_dpls_line(hass, mqtt_client, kdl_address):
         await asyncio.sleep(0.2)
 
 
+async def poll_dpls_status(hass, mqtt_client, kdl_address, dpls_address, device_key):
+    """Однократный опрос статуса DPLS устройства (команда 25)"""
+    command = f"{kdl_address};6;0;25;{dpls_address};0"
+    context = {
+        "type": "dpls_status",
+        "kdl_addr": kdl_address,
+        "dpls_addr": dpls_address,
+        "device_key": device_key,
+    }
+    await mqtt_client.send_command(command, context=context)
+
+
 async def process_message(hass, data):
     """Обработка ответов"""
     
@@ -188,7 +200,31 @@ async def process_message(hass, data):
                         "type_code": dpls_type,
                         "kdl_address": kdl_address,
                         "dpls_address": dpls_addr,
+                        "статус": None,
                     }
                     async_dispatcher_send(hass, f"{DOMAIN}_new_dpls_device", device_key, dpls_devices[device_key])
+                    
+                    # После создания сенсора, сразу опрашиваем статус
+                    mqtt_client = hass.data[DOMAIN]["mqtt_client"]
+                    await poll_dpls_status(hass, mqtt_client, kdl_address, dpls_addr, device_key)
         except (ValueError, IndexError) as e:
             _LOGGER.error(f"Ошибка парсинга DPLS: {e}")
+    
+    # ========== СТАТУС DPLS (команда 25) ==========
+    elif rsp_type == RSP_STATUS and len(parts) >= 5:
+        try:
+            kdl_address = int(parts[0])
+            dpls_addr = int(parts[3])
+            status_code = int(parts[4])
+            
+            device_key = f"{kdl_address}_{dpls_addr}"
+            status_text = STATUS_CODES.get(status_code, f"Код {status_code}")
+            
+            _LOGGER.debug(f"Статус DPLS: КДЛ {kdl_address}, DPLS {dpls_addr} -> {status_text}")
+            
+            dpls_devices = hass.data[DOMAIN].get("dpls_devices", {})
+            if device_key in dpls_devices:
+                dpls_devices[device_key]["статус"] = status_text
+                async_dispatcher_send(hass, f"{DOMAIN}_update_dpls_status", device_key, status_text)
+        except (ValueError, IndexError) as e:
+            _LOGGER.error(f"Ошибка парсинга статуса: {e}")
