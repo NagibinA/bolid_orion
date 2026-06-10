@@ -6,6 +6,9 @@ DOMAIN = "bolid_orion"
 TOPIC_COMMAND = "WemosOrion/byteN"
 TOPIC_ANSWER = "WemosOrion/answer"
 
+# Сигнал для обновления статуса
+SIGNAL_STATUS_UPDATE = f"{DOMAIN}_status_update"
+
 # Типы Orion приборов
 ORION_DEVICE_TYPES = {
     44: "С2000-БКИ",
