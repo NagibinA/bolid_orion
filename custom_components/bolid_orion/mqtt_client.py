@@ -1,4 +1,4 @@
-"""MQTT клиент для Bolid Orion с контекстом"""
+"""MQTT клиент для Bolid Orion с синхронными запросами"""
 
 import asyncio
 import logging
@@ -66,25 +66,17 @@ class OrionMQTTClient:
         payload = msg.payload.decode()
         _LOGGER.debug(f"Получено: {msg.topic} -> {payload}")
         
-        parts = payload.strip().split()
-        if len(parts) >= 5:
-            try:
-                rsp_type = int(parts[2]) if len(parts) > 2 else None
-                if rsp_type == 58 and self._pending:
-                    first_cmd_id = next(iter(self._pending))
-                    ctx = self._pending[first_cmd_id]
-                    if ctx.get("type") == "dpls_scan":
-                        correct_dpls_addr = ctx.get("dpls_addr")
-                        dispatcher_send(
-                            self.hass, 
-                            f"{DOMAIN}_message", 
-                            {"payload": payload, "dpls_addr": correct_dpls_addr}
-                        )
-                        del self._pending[first_cmd_id]
-                        return
-            except (ValueError, IndexError) as e:
-                _LOGGER.error(f"Ошибка: {e}")
+        # Проверяем, есть ли ожидающий Future
+        if self._pending:
+            # Берём первый ожидающий Future (FIFO)
+            first_cmd_id = next(iter(self._pending))
+            ctx = self._pending[first_cmd_id]
+            if ctx.get("type") == "wait":
+                ctx["future"].set_result(payload)
+                del self._pending[first_cmd_id]
+                return
         
+        # Для всех остальных сообщений
         dispatcher_send(self.hass, f"{DOMAIN}_message", {"payload": payload})
 
     async def disconnect(self):
@@ -93,15 +85,11 @@ class OrionMQTTClient:
             self.client.disconnect()
             self._connected = False
 
-    async def send_command(self, command: str, context: dict = None):
+    async def send_command(self, command: str):
+        """Отправка команды без ожидания ответа"""
         if not self._connected or not self.client:
             _LOGGER.error("MQTT не подключен")
             return False
-
-        if context:
-            cmd_id = str(uuid.uuid4())
-            self._pending[cmd_id] = context
-            _LOGGER.debug(f"Сохранён контекст: адрес DPLS={context.get('dpls_addr')}")
 
         def do_publish():
             self.client.publish(TOPIC_COMMAND, command)
@@ -109,3 +97,28 @@ class OrionMQTTClient:
         await self.hass.async_add_executor_job(do_publish)
         _LOGGER.debug(f"Команда отправлена: {command}")
         return True
+
+    async def send_command_and_wait(self, command: str, timeout: float = 0.5):
+        """Отправить команду и дождаться ответа"""
+        if not self._connected or not self.client:
+            _LOGGER.error("MQTT не подключен")
+            return None
+        
+        future = asyncio.Future()
+        cmd_id = str(uuid.uuid4())
+        self._pending[cmd_id] = {"future": future, "type": "wait"}
+        
+        def do_publish():
+            self.client.publish(TOPIC_COMMAND, command)
+        
+        await self.hass.async_add_executor_job(do_publish)
+        _LOGGER.debug(f"Команда отправлена с ожиданием: {command}")
+        
+        try:
+            response = await asyncio.wait_for(future, timeout=timeout)
+            return response
+        except asyncio.TimeoutError:
+            _LOGGER.debug(f"Таймаут ожидания ответа: {command}")
+            return None
+        finally:
+            self._pending.pop(cmd_id, None)
