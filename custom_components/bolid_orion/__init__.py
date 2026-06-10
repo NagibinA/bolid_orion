@@ -1,3 +1,65 @@
+"""Интеграция Bolid Orion Protocol"""
+
+import asyncio
+import logging
+from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
+
+from .const import DOMAIN, ORION_DEVICE_TYPES, DPLS_DEVICE_TYPES, STATUS_CODES
+from .const import RSP_ORION, RSP_DPLS, RSP_STATUS, SIGNAL_STATUS_UPDATE
+from .mqtt_client import OrionMQTTClient
+
+_LOGGER = logging.getLogger(__name__)
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Настройка интеграции"""
+    
+    mqtt_client = OrionMQTTClient(hass, entry.data)
+    await mqtt_client.connect()
+    
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN]["mqtt_client"] = mqtt_client
+    hass.data[DOMAIN]["orion_devices"] = {}
+    hass.data[DOMAIN]["dpls_devices"] = {}
+    hass.data[DOMAIN]["kdl_addresses"] = []
+    hass.data[DOMAIN]["entry_id"] = entry.entry_id
+    hass.data[DOMAIN]["scan_in_progress"] = False
+    
+    def handle_message(data):
+        if isinstance(data, str):
+            data = {"payload": data}
+        hass.create_task(process_message(hass, data))
+    
+    async_dispatcher_connect(hass, f"{DOMAIN}_message", handle_message)
+    
+    await hass.config_entries.async_forward_entry_setups(entry, ["sensor", "binary_sensor"])
+    
+    async def delayed_scan():
+        await asyncio.sleep(10)
+        await scan_orion_devices(hass, mqtt_client)
+    
+    entry.async_create_background_task(hass, delayed_scan(), "bolid_orion_scan")
+    
+    return True
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Выгрузка интеграции"""
+    
+    mqtt_client = hass.data[DOMAIN].get("mqtt_client")
+    if mqtt_client:
+        await mqtt_client.disconnect()
+    
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, ["sensor", "binary_sensor"])
+    
+    if unload_ok:
+        hass.data.pop(DOMAIN, None)
+    
+    return unload_ok
+
+
 async def scan_orion_devices(hass, mqtt_client):
     """Сканирование Orion адресов 1-127 (синхронно)"""
     
@@ -120,3 +182,47 @@ async def process_dpls_response(hass, response, kdl_address, requested_addr):
                 async_dispatcher_send(hass, f"{DOMAIN}_new_dpls_device", device_key, dpls_devices[device_key])
     except (ValueError, IndexError) as e:
         _LOGGER.error(f"Ошибка парсинга DPLS: {e}")
+
+
+async def process_message(hass, data):
+    """Обработка ответов (в основном для статуса)"""
+    
+    if DOMAIN not in hass.data:
+        return
+    
+    if isinstance(data, str):
+        data = {"payload": data}
+    
+    payload = data.get("payload")
+    
+    if not payload:
+        return
+    
+    parts = payload.strip().split()
+    if len(parts) < 5:
+        return
+    
+    try:
+        rsp_type = int(parts[2])
+    except:
+        return
+    
+    # ========== СТАТУС DPLS (команда 25) ==========
+    if rsp_type == RSP_STATUS and len(parts) >= 5:
+        try:
+            kdl_address = int(parts[0])
+            dpls_addr = int(parts[3])
+            status_code = int(parts[4])
+            
+            device_key = f"{kdl_address}_{dpls_addr}"
+            status_text = STATUS_CODES.get(status_code, f"Неизвестно")
+            
+            _LOGGER.debug(f"Статус DPLS: КДЛ {kdl_address}, DPLS {dpls_addr} -> {status_text}")
+            
+            dpls_devices = hass.data[DOMAIN].get("dpls_devices", {})
+            if device_key in dpls_devices:
+                dpls_devices[device_key]["status_code"] = status_code
+                dpls_devices[device_key]["status_text"] = status_text
+                async_dispatcher_send(hass, f"{DOMAIN}_update_dpls_status", device_key, status_code, status_text)
+        except (ValueError, IndexError) as e:
+            _LOGGER.error(f"Ошибка парсинга статуса: {e}")
