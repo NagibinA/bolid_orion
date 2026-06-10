@@ -13,63 +13,57 @@ _LOGGER = logging.getLogger(__name__)
 async def async_setup_entry(hass, entry, async_add_entities):
     """Настройка сенсоров"""
     
-    devices = hass.data[DOMAIN].get("devices", {})
     entities = []
     
-    for address, device_info in devices.items():
-        entities.append(OrionDeviceSensor(address, device_info))
+    # Orion устройства
+    for address, info in hass.data[DOMAIN].get("orion_devices", {}).items():
+        entities.append(OrionDeviceSensor(address, info))
+    
+    # DPLS устройства
+    for device_key, info in hass.data[DOMAIN].get("dpls_devices", {}).items():
+        entities.append(DPLSDeviceSensor(device_key, info))
     
     async_add_entities(entities)
     
     @callback
-    def async_add_device(address, device_info):
-        """Добавление нового сенсора"""
-        for entity in entities:
-            if entity.address == address:
-                entity.update_info(device_info)
-                return
-        new_sensor = OrionDeviceSensor(address, device_info)
-        entities.append(new_sensor)
-        async_add_entities([new_sensor])
+    def add_orion(address, info):
+        async_add_entities([OrionDeviceSensor(address, info)])
     
-    async_dispatcher_connect(hass, f"{DOMAIN}_new_device", async_add_device)
+    @callback
+    def add_dpls(device_key, info):
+        async_add_entities([DPLSDeviceSensor(device_key, info)])
+    
+    async_dispatcher_connect(hass, f"{DOMAIN}_new_orion_device", add_orion)
+    async_dispatcher_connect(hass, f"{DOMAIN}_new_dpls_device", add_dpls)
 
 
 class OrionDeviceSensor(SensorEntity):
-    """Сенсор устройства Orion"""
-
-    def __init__(self, address: int, device_info: dict):
+    """Сенсор Orion устройства"""
+    
+    def __init__(self, address, info):
         self.address = address
-        self._device_info = device_info
-        self._device_name = device_info.get("name", "Неизвестный прибор")
-        self._firmware = device_info.get("firmware", "unknown")
-        
-        # Название сенсора: "С2000-БКИ (адрес 2)"
-        self._attr_name = f"{self._device_name} (адрес {address})"
-        self._attr_unique_id = f"{DOMAIN}_device_{address}"
-        self._attr_icon = "mdi:chip"
-        self._attr_native_value = self._device_name
-        
-        # Атрибуты
+        self._attr_name = info["name"]
+        self._attr_unique_id = f"{DOMAIN}_orion_{address}"
+        self._attr_native_value = info["name"]
         self._attr_extra_state_attributes = {
             "address": address,
-            "firmware": self._firmware,
+            "firmware": info.get("firmware", "unknown"),
+            "type_code": info.get("type_code", 0),
         }
+        self._attr_should_poll = False
 
-    @property
-    def should_poll(self):
-        return False
 
-    @callback
-    def update_info(self, device_info: dict):
-        """Обновление информации об устройстве"""
-        self._device_name = device_info.get("name", "Неизвестный прибор")
-        self._firmware = device_info.get("firmware", "unknown")
-        
-        self._attr_name = f"{self._device_name} (адрес {self.address})"
-        self._attr_native_value = self._device_name
+class DPLSDeviceSensor(SensorEntity):
+    """Сенсор DPLS устройства"""
+    
+    def __init__(self, device_key, info):
+        self.device_key = device_key
+        self._attr_name = info["name"]
+        self._attr_unique_id = f"{DOMAIN}_dpls_{device_key}"
+        self._attr_native_value = info["name"]
         self._attr_extra_state_attributes = {
-            "address": self.address,
-            "firmware": self._firmware,
+            "kdl_address": info.get("kdl_address"),
+            "dpls_address": info.get("dpls_address"),
+            "type_code": info.get("type_code", 0),
         }
-        self.async_write_ha_state()
+        self._attr_should_poll = False
