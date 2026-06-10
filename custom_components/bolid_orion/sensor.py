@@ -15,11 +15,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
     
     entities = []
     
-    # Orion устройства
     for address, info in hass.data[DOMAIN].get("orion_devices", {}).items():
         entities.append(OrionDeviceSensor(address, info))
     
-    # DPLS устройства
     for device_key, info in hass.data[DOMAIN].get("dpls_devices", {}).items():
         entities.append(DPLSDeviceSensor(device_key, info))
     
@@ -38,8 +36,6 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
 
 class OrionDeviceSensor(SensorEntity):
-    """Сенсор Orion устройства"""
-    
     def __init__(self, address, info):
         self.address = address
         self._attr_name = info["name"]
@@ -54,8 +50,6 @@ class OrionDeviceSensor(SensorEntity):
 
 
 class DPLSDeviceSensor(SensorEntity):
-    """Сенсор DPLS устройства"""
-    
     def __init__(self, device_key, info):
         self.device_key = device_key
         self._attr_name = info["name"]
