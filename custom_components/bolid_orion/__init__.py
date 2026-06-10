@@ -200,7 +200,8 @@ async def process_message(hass, data):
                         "type_code": dpls_type,
                         "kdl_address": kdl_address,
                         "dpls_address": dpls_addr,
-                        "статус": None,
+                        "status_code": None,
+                        "status_text": None,
                     }
                     async_dispatcher_send(hass, f"{DOMAIN}_new_dpls_device", device_key, dpls_devices[device_key])
                     
@@ -210,22 +211,22 @@ async def process_message(hass, data):
         except (ValueError, IndexError) as e:
             _LOGGER.error(f"Ошибка парсинга DPLS: {e}")
     
-# ========== СТАТУС DPLS (команда 25) ==========
-elif rsp_type == RSP_STATUS and len(parts) >= 5:
-    try:
-        kdl_address = int(parts[0])
-        dpls_addr = int(parts[3])
-        status_code = int(parts[4])
-        
-        device_key = f"{kdl_address}_{dpls_addr}"
-        status_text = STATUS_CODES.get(status_code, f"Код {status_code}")
-        
-        _LOGGER.debug(f"Статус DPLS: КДЛ {kdl_address}, DPLS {dpls_addr} -> {status_text}")
-        
-        dpls_devices = hass.data[DOMAIN].get("dpls_devices", {})
-        if device_key in dpls_devices:
-            dpls_devices[device_key]["status_code"] = status_code
-            dpls_devices[device_key]["status_text"] = status_text
-            async_dispatcher_send(hass, f"{DOMAIN}_update_dpls_status", device_key, status_code, status_text)
-    except (ValueError, IndexError) as e:
-        _LOGGER.error(f"Ошибка парсинга статуса: {e}")
+    # ========== СТАТУС DPLS (команда 25) ==========
+    elif rsp_type == RSP_STATUS and len(parts) >= 5:
+        try:
+            kdl_address = int(parts[0])
+            dpls_addr = int(parts[3])
+            status_code = int(parts[4])
+            
+            device_key = f"{kdl_address}_{dpls_addr}"
+            status_text = STATUS_CODES.get(status_code, f"Неизвестно")
+            
+            _LOGGER.debug(f"Статус DPLS: КДЛ {kdl_address}, DPLS {dpls_addr} -> {status_text}")
+            
+            dpls_devices = hass.data[DOMAIN].get("dpls_devices", {})
+            if device_key in dpls_devices:
+                dpls_devices[device_key]["status_code"] = status_code
+                dpls_devices[device_key]["status_text"] = status_text
+                async_dispatcher_send(hass, f"{DOMAIN}_update_dpls_status", device_key, status_code, status_text)
+        except (ValueError, IndexError) as e:
+            _LOGGER.error(f"Ошибка парсинга статуса: {e}")
