@@ -79,13 +79,7 @@ async def poll_all_dpls_status(hass, mqtt_client):
         if kdl_address and dpls_address:
             async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Опрос статуса DPLS: {index} из {len(dpls_devices)} (КДЛ {kdl_address}, DPLS {dpls_address})")
             command = f"{kdl_address};6;0;25;{dpls_address};0"
-            context = {
-                "type": "dpls_status",
-                "kdl_addr": kdl_address,
-                "dpls_addr": dpls_address,
-                "device_key": device_key,
-            }
-            await mqtt_client.send_command(command, context=context)
+            await mqtt_client.send_command(command)
             await asyncio.sleep(0.2)
     
     async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Опрос статуса DPLS завершён")
@@ -125,7 +119,7 @@ async def scan_orion_devices(hass, mqtt_client):
 
 
 async def scan_dpls_line(hass, mqtt_client, kdl_address):
-    """Сканирование DPLS линии для КДЛ (адреса 1-127)"""
+    """Синхронное сканирование DPLS линии для КДЛ (адреса 1-127)"""
     
     _LOGGER.info(f"Сканирование DPLS для КДЛ {kdl_address}")
     async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование DPLS: КДЛ {kdl_address}")
@@ -133,17 +127,45 @@ async def scan_dpls_line(hass, mqtt_client, kdl_address):
     for dpls_addr in range(1, 128):
         async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование DPLS: КДЛ {kdl_address}, адрес {dpls_addr} из 127")
         command = f"{kdl_address};6;0;57;{dpls_addr};1"
-        context = {
-            "type": "dpls_scan",
-            "kdl_addr": kdl_address,
-            "dpls_addr": dpls_addr
-        }
-        await mqtt_client.send_command(command, context=context)
-        await asyncio.sleep(0.2)
+        
+        # Отправляем и ждём ответ
+        response = await mqtt_client.send_command_and_wait(command, timeout=0.5)
+        
+        if response:
+            # Обрабатываем ответ
+            parts = response.strip().split()
+            if len(parts) >= 5:
+                try:
+                    rsp_type = int(parts[2])
+                    if rsp_type == RSP_DPLS:
+                        device_exists = int(parts[3])
+                        dpls_type = int(parts[4])
+                        
+                        if device_exists != 0 and dpls_type != 0:
+                            device_name = DPLS_DEVICE_TYPES.get(dpls_type, f"Тип {dpls_type}")
+                            _LOGGER.info(f"Найден DPLS: КДЛ {kdl_address}, DPLS адрес {dpls_addr}, тип {device_name}")
+                            
+                            dpls_devices = hass.data[DOMAIN]["dpls_devices"]
+                            device_key = f"{kdl_address}_{dpls_addr}"
+                            
+                            if device_key not in dpls_devices:
+                                dpls_devices[device_key] = {
+                                    "name": device_name,
+                                    "type_code": dpls_type,
+                                    "kdl_address": kdl_address,
+                                    "dpls_address": dpls_addr,
+                                    "status_code": None,
+                                    "status_text": None,
+                                }
+                                async_dispatcher_send(hass, f"{DOMAIN}_new_dpls_device", device_key, dpls_devices[device_key])
+                except (ValueError, IndexError) as e:
+                    _LOGGER.error(f"Ошибка парсинга DPLS ответа: {e}")
+        
+        await asyncio.sleep(0.1)
 
 
 async def process_message(hass, data):
-    """Обработка ответов"""
+    """Обработка ответов (в основном для статуса)"""
     
     if DOMAIN not in hass.data:
         return
@@ -152,7 +174,6 @@ async def process_message(hass, data):
         data = {"payload": data}
     
     payload = data.get("payload")
-    dpls_addr_from_context = data.get("dpls_addr")
     
     if not payload:
         return
@@ -198,36 +219,6 @@ async def process_message(hass, data):
                     _LOGGER.info(f"Добавлен КДЛ адрес {address}")
         except (ValueError, IndexError) as e:
             _LOGGER.error(f"Ошибка парсинга Orion: {e}")
-    
-    # ========== DPLS ==========
-    elif rsp_type == RSP_DPLS and len(parts) >= 5:
-        try:
-            kdl_address = int(parts[0])
-            device_exists = int(parts[3])
-            dpls_type = int(parts[4])
-            
-            dpls_addr = dpls_addr_from_context
-            
-            if device_exists != 0 and dpls_type != 0 and dpls_addr is not None:
-                device_name = DPLS_DEVICE_TYPES.get(dpls_type, f"Тип {dpls_type}")
-                
-                _LOGGER.info(f"Найден DPLS: КДЛ {kdl_address}, DPLS адрес {dpls_addr}, тип {device_name}")
-                
-                dpls_devices = hass.data[DOMAIN]["dpls_devices"]
-                device_key = f"{kdl_address}_{dpls_addr}"
-                
-                if device_key not in dpls_devices:
-                    dpls_devices[device_key] = {
-                        "name": device_name,
-                        "type_code": dpls_type,
-                        "kdl_address": kdl_address,
-                        "dpls_address": dpls_addr,
-                        "status_code": None,
-                        "status_text": None,
-                    }
-                    async_dispatcher_send(hass, f"{DOMAIN}_new_dpls_device", device_key, dpls_devices[device_key])
-        except (ValueError, IndexError) as e:
-            _LOGGER.error(f"Ошибка парсинга DPLS: {e}")
     
     # ========== СТАТУС DPLS (команда 25) ==========
     elif rsp_type == RSP_STATUS and len(parts) >= 5:
