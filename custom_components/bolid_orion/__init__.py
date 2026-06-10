@@ -7,7 +7,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 
 from .const import DOMAIN, ORION_DEVICE_TYPES, DPLS_DEVICE_TYPES
-from .const import RSP_ORION, RSP_DPLS
+from .const import RSP_ORION, RSP_DPLS, SIGNAL_STATUS_UPDATE
 from .mqtt_client import OrionMQTTClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -28,6 +28,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["scan_in_progress"] = False
     
     def handle_message(data):
+        # Если пришла строка, оборачиваем в словарь
+        if isinstance(data, str):
+            data = {"payload": data}
         hass.create_task(process_message(hass, data))
     
     async_dispatcher_connect(hass, f"{DOMAIN}_message", handle_message)
@@ -65,13 +68,16 @@ async def scan_orion_devices(hass, mqtt_client):
         return
     
     hass.data[DOMAIN]["scan_in_progress"] = True
+    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, "Сканирование Orion: подготовка...")
     _LOGGER.info("Начало сканирования Orion (адреса 1-127)")
     
     for addr in range(1, 128):
+        async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование Orion: адрес {addr} из 127")
         command = f"{addr};6;0;13;0;0"
         await mqtt_client.send_command(command)
         await asyncio.sleep(0.3)
     
+    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование Orion завершено. Найдено: {len(hass.data[DOMAIN]['orion_devices'])}")
     _LOGGER.info(f"Сканирование Orion завершено. Найдено: {len(hass.data[DOMAIN]['orion_devices'])}")
     
     # Сканируем DPLS для каждого найденного КДЛ
@@ -80,6 +86,7 @@ async def scan_orion_devices(hass, mqtt_client):
     
     orion_count = len(hass.data[DOMAIN]["orion_devices"])
     dpls_count = len(hass.data[DOMAIN]["dpls_devices"])
+    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование завершено. Orion: {orion_count}, DPLS: {dpls_count}")
     _LOGGER.info(f"Сканирование завершено. Orion: {orion_count}, DPLS: {dpls_count}")
     
     hass.data[DOMAIN]["scan_in_progress"] = False
@@ -89,8 +96,10 @@ async def scan_dpls_line(hass, mqtt_client, kdl_address):
     """Сканирование DPLS линии для КДЛ (адреса 1-127)"""
     
     _LOGGER.info(f"Сканирование DPLS для КДЛ {kdl_address}")
+    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование DPLS: КДЛ {kdl_address}")
     
     for dpls_addr in range(1, 128):
+        async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование DPLS: КДЛ {kdl_address}, адрес {dpls_addr} из 127")
         command = f"{kdl_address};6;0;57;{dpls_addr};1"
         context = {
             "type": "dpls_scan",
@@ -107,8 +116,15 @@ async def process_message(hass, data):
     if DOMAIN not in hass.data:
         return
     
+    # Если data — строка, преобразуем в словарь
+    if isinstance(data, str):
+        data = {"payload": data}
+    
     payload = data.get("payload")
     dpls_addr_from_context = data.get("dpls_addr")
+    
+    if not payload:
+        return
     
     parts = payload.strip().split()
     if len(parts) < 5:
