@@ -28,7 +28,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["scan_in_progress"] = False
     
     def handle_message(data):
-        # Если пришла строка, оборачиваем в словарь
         if isinstance(data, str):
             data = {"payload": data}
         hass.create_task(process_message(hass, data))
@@ -80,7 +79,6 @@ async def scan_orion_devices(hass, mqtt_client):
     async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование Orion завершено. Найдено: {len(hass.data[DOMAIN]['orion_devices'])}")
     _LOGGER.info(f"Сканирование Orion завершено. Найдено: {len(hass.data[DOMAIN]['orion_devices'])}")
     
-    # Сканируем DPLS для каждого найденного КДЛ
     for kdl_addr in hass.data[DOMAIN]["kdl_addresses"]:
         await scan_dpls_line(hass, mqtt_client, kdl_addr)
     
@@ -116,7 +114,6 @@ async def process_message(hass, data):
     if DOMAIN not in hass.data:
         return
     
-    # Если data — строка, преобразуем в словарь
     if isinstance(data, str):
         data = {"payload": data}
     
