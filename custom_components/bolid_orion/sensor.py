@@ -31,8 +31,16 @@ async def async_setup_entry(hass, entry, async_add_entities):
     def add_dpls(device_key, info):
         async_add_entities([DPLSDeviceSensor(device_key, info)])
     
+    @callback
+    def update_dpls_status(device_key, status_text):
+        for entity in entities:
+            if isinstance(entity, DPLSDeviceSensor) and entity.device_key == device_key:
+                entity.update_status(status_text)
+                return
+    
     async_dispatcher_connect(hass, f"{DOMAIN}_new_orion_device", add_orion)
     async_dispatcher_connect(hass, f"{DOMAIN}_new_dpls_device", add_dpls)
+    async_dispatcher_connect(hass, f"{DOMAIN}_update_dpls_status", update_dpls_status)
 
 
 class OrionDeviceSensor(SensorEntity):
@@ -59,5 +67,11 @@ class DPLSDeviceSensor(SensorEntity):
             "kdl_address": info.get("kdl_address"),
             "dpls_address": info.get("dpls_address"),
             "type_code": info.get("type_code", 0),
+            "статус": info.get("статус"),
         }
         self._attr_should_poll = False
+    
+    @callback
+    def update_status(self, status_text):
+        self._attr_extra_state_attributes["статус"] = status_text
+        self.async_write_ha_state()
