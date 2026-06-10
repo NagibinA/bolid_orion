@@ -15,9 +15,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
     
     entities = []
     
+    # Orion устройства
     for address, info in hass.data[DOMAIN].get("orion_devices", {}).items():
         entities.append(OrionDeviceSensor(address, info))
     
+    # DPLS устройства
     for device_key, info in hass.data[DOMAIN].get("dpls_devices", {}).items():
         entities.append(DPLSDeviceSensor(device_key, info))
     
@@ -32,10 +34,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
         async_add_entities([DPLSDeviceSensor(device_key, info)])
     
     @callback
-    def update_dpls_status(device_key, status_text):
+    def update_dpls_status(device_key, status_code, status_text):
         for entity in entities:
             if isinstance(entity, DPLSDeviceSensor) and entity.device_key == device_key:
-                entity.update_status(status_text)
+                entity.update_status(status_code, status_text)
                 return
     
     async_dispatcher_connect(hass, f"{DOMAIN}_new_orion_device", add_orion)
@@ -67,11 +69,13 @@ class DPLSDeviceSensor(SensorEntity):
             "kdl_address": info.get("kdl_address"),
             "dpls_address": info.get("dpls_address"),
             "type_code": info.get("type_code", 0),
-            "статус": info.get("статус"),
+            "status_code": info.get("status_code"),
+            "status_text": info.get("status_text"),
         }
         self._attr_should_poll = False
     
     @callback
-    def update_status(self, status_text):
-        self._attr_extra_state_attributes["статус"] = status_text
+    def update_status(self, status_code, status_text):
+        self._attr_extra_state_attributes["status_code"] = status_code
+        self._attr_extra_state_attributes["status_text"] = status_text
         self.async_write_ha_state()
