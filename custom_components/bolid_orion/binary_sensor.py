@@ -1,28 +1,23 @@
-"""Сенсор статуса для Bolid Orion"""
-
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.core import callback
-
-from .const import DOMAIN
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from .const import DOMAIN, SIGNAL_STATUS_UPDATE
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    """Настройка сенсора статуса"""
     status_sensor = OrionStatusSensor()
     async_add_entities([status_sensor])
-    
-    # Сохраняем ссылку на сенсор
     hass.data[DOMAIN]["status_sensor"] = status_sensor
+    
+    async_dispatcher_connect(hass, SIGNAL_STATUS_UPDATE, status_sensor.update_status)
 
 
 class OrionStatusSensor(SensorEntity):
-    """Сенсор статуса сканирования"""
-
     def __init__(self):
         self._attr_name = "Bolid Orion Scan Status"
         self._attr_unique_id = f"{DOMAIN}_scan_status"
         self._attr_icon = "mdi:radar"
-        self._state = "Инициализация..."
+        self._state = "Ожидание"
 
     @property
     def native_value(self):
@@ -30,6 +25,5 @@ class OrionStatusSensor(SensorEntity):
 
     @callback
     def update_status(self, status: str):
-        """Обновление статуса"""
         self._state = status
         self.async_write_ha_state()
