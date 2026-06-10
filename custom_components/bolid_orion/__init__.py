@@ -60,6 +60,37 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unload_ok
 
 
+async def poll_all_dpls_status(hass, mqtt_client):
+    """Однократный опрос статуса для всех найденных DPLS устройств"""
+    dpls_devices = hass.data[DOMAIN].get("dpls_devices", {})
+    
+    if not dpls_devices:
+        return
+    
+    _LOGGER.info(f"Начинаем опрос статуса {len(dpls_devices)} DPLS устройств")
+    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Опрос статуса DPLS: 0 из {len(dpls_devices)}")
+    
+    index = 0
+    for device_key, device_info in dpls_devices.items():
+        index += 1
+        kdl_address = device_info.get("kdl_address")
+        dpls_address = device_info.get("dpls_address")
+        
+        if kdl_address and dpls_address:
+            async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Опрос статуса DPLS: {index} из {len(dpls_devices)} (КДЛ {kdl_address}, DPLS {dpls_address})")
+            command = f"{kdl_address};6;0;25;{dpls_address};0"
+            context = {
+                "type": "dpls_status",
+                "kdl_addr": kdl_address,
+                "dpls_addr": dpls_address,
+                "device_key": device_key,
+            }
+            await mqtt_client.send_command(command, context=context)
+            await asyncio.sleep(0.2)
+    
+    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Опрос статуса DPLS завершён")
+
+
 async def scan_orion_devices(hass, mqtt_client):
     """Сканирование Orion адресов 1-127"""
     
@@ -81,6 +112,9 @@ async def scan_orion_devices(hass, mqtt_client):
     
     for kdl_addr in hass.data[DOMAIN]["kdl_addresses"]:
         await scan_dpls_line(hass, mqtt_client, kdl_addr)
+    
+    # После сканирования DPLS, опрашиваем статусы
+    await poll_all_dpls_status(hass, mqtt_client)
     
     orion_count = len(hass.data[DOMAIN]["orion_devices"])
     dpls_count = len(hass.data[DOMAIN]["dpls_devices"])
@@ -106,18 +140,6 @@ async def scan_dpls_line(hass, mqtt_client, kdl_address):
         }
         await mqtt_client.send_command(command, context=context)
         await asyncio.sleep(0.2)
-
-
-async def poll_dpls_status(hass, mqtt_client, kdl_address, dpls_address, device_key):
-    """Однократный опрос статуса DPLS устройства (команда 25)"""
-    command = f"{kdl_address};6;0;25;{dpls_address};0"
-    context = {
-        "type": "dpls_status",
-        "kdl_addr": kdl_address,
-        "dpls_addr": dpls_address,
-        "device_key": device_key,
-    }
-    await mqtt_client.send_command(command, context=context)
 
 
 async def process_message(hass, data):
@@ -204,10 +226,6 @@ async def process_message(hass, data):
                         "status_text": None,
                     }
                     async_dispatcher_send(hass, f"{DOMAIN}_new_dpls_device", device_key, dpls_devices[device_key])
-                    
-                    # После создания сенсора, сразу опрашиваем статус
-                    mqtt_client = hass.data[DOMAIN]["mqtt_client"]
-                    await poll_dpls_status(hass, mqtt_client, kdl_address, dpls_addr, device_key)
         except (ValueError, IndexError) as e:
             _LOGGER.error(f"Ошибка парсинга DPLS: {e}")
     
