@@ -1,4 +1,4 @@
-"""MQTT клиент для Bolid Orion с контекстом"""
+"""MQTT клиент для Bolid Orion с синхронными запросами и фильтром ответов"""
 
 import asyncio
 import logging
@@ -48,7 +48,7 @@ class OrionMQTTClient:
             self.client.subscribe(TOPIC_ANSWER)
             _LOGGER.info(f"Подключен к MQTT брокеру {self.config['broker']}")
         else:
-            _LOGGER.error("Не удалось подключиться к MQTT брокеру")
+            _LOGGER.error("Не удалось подключиться к МQTT брокеру")
 
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
@@ -66,25 +66,27 @@ class OrionMQTTClient:
         payload = msg.payload.decode()
         _LOGGER.debug(f"Получено: {msg.topic} -> {payload}")
         
-        parts = payload.strip().split()
-        if len(parts) >= 5:
-            try:
-                rsp_type = int(parts[2]) if len(parts) > 2 else None
-                if rsp_type == 58 and self._pending:
-                    first_cmd_id = next(iter(self._pending))
-                    ctx = self._pending[first_cmd_id]
-                    if ctx.get("type") == "dpls_scan":
-                        correct_dpls_addr = ctx.get("dpls_addr")
-                        dispatcher_send(
-                            self.hass, 
-                            f"{DOMAIN}_message", 
-                            {"payload": payload, "dpls_addr": correct_dpls_addr}
-                        )
-                        del self._pending[first_cmd_id]
+        # Проверяем, есть ли ожидающий Future
+        if self._pending:
+            parts = payload.strip().split()
+            if len(parts) >= 3:
+                try:
+                    rsp_type = int(parts[2])
+                    # Берём единственный Future
+                    cmd_id = next(iter(self._pending))
+                    ctx = self._pending[cmd_id]
+                    expected_type = ctx.get("expected_rsp_type")
+                    
+                    # Если тип ответа совпадает с ожидаемым
+                    if rsp_type == expected_type:
+                        ctx["future"].set_result(payload)
+                        del self._pending[cmd_id]
                         return
-            except (ValueError, IndexError) as e:
-                _LOGGER.error(f"Ошибка: {e}")
+                    # Иначе игнорируем и ждём дальше
+                except (ValueError, IndexError) as e:
+                    _LOGGER.error(f"Ошибка парсинга: {e}")
         
+        # Для остальных сообщений (не ожидаемых)
         dispatcher_send(self.hass, f"{DOMAIN}_message", {"payload": payload})
 
     async def disconnect(self):
@@ -93,15 +95,10 @@ class OrionMQTTClient:
             self.client.disconnect()
             self._connected = False
 
-    async def send_command(self, command: str, context: dict = None):
+    async def send_command(self, command: str):
         if not self._connected or not self.client:
             _LOGGER.error("MQTT не подключен")
             return False
-
-        if context:
-            cmd_id = str(uuid.uuid4())
-            self._pending[cmd_id] = context
-            _LOGGER.debug(f"Сохранён контекст: адрес DPLS={context.get('dpls_addr')}")
 
         def do_publish():
             self.client.publish(TOPIC_COMMAND, command)
@@ -109,3 +106,31 @@ class OrionMQTTClient:
         await self.hass.async_add_executor_job(do_publish)
         _LOGGER.debug(f"Команда отправлена: {command}")
         return True
+
+    async def send_command_and_wait(self, command: str, expected_rsp_type: int, timeout: float = 5.0):
+        """Отправить команду и дождаться ответа с определённым rsp_type (таймаут 5 секунд)"""
+        if not self._connected or not self.client:
+            _LOGGER.error("MQTT не подключен")
+            return None
+        
+        # Очищаем старые Future
+        self._pending.clear()
+        
+        future = asyncio.Future()
+        cmd_id = str(uuid.uuid4())
+        self._pending[cmd_id] = {"future": future, "expected_rsp_type": expected_rsp_type}
+        
+        def do_publish():
+            self.client.publish(TOPIC_COMMAND, command)
+        
+        await self.hass.async_add_executor_job(do_publish)
+        _LOGGER.debug(f"Команда отправлена с ожиданием ответа типа {expected_rsp_type}: {command}")
+        
+        try:
+            response = await asyncio.wait_for(future, timeout=timeout)
+            return response
+        except asyncio.TimeoutError:
+            _LOGGER.debug(f"Таймаут {timeout} сек ожидания ответа типа {expected_rsp_type}: {command}")
+            return None
+        finally:
+            self._pending.clear()
