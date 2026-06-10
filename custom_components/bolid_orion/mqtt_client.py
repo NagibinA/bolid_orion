@@ -66,9 +66,7 @@ class OrionMQTTClient:
         payload = msg.payload.decode()
         _LOGGER.debug(f"Получено: {msg.topic} -> {payload}")
         
-        # Проверяем, есть ли ожидающий Future
         if self._pending:
-            # Берём первый ожидающий Future (FIFO)
             first_cmd_id = next(iter(self._pending))
             ctx = self._pending[first_cmd_id]
             if ctx.get("type") == "wait":
@@ -76,7 +74,6 @@ class OrionMQTTClient:
                 del self._pending[first_cmd_id]
                 return
         
-        # Для всех остальных сообщений
         dispatcher_send(self.hass, f"{DOMAIN}_message", {"payload": payload})
 
     async def disconnect(self):
@@ -86,7 +83,6 @@ class OrionMQTTClient:
             self._connected = False
 
     async def send_command(self, command: str):
-        """Отправка команды без ожидания ответа"""
         if not self._connected or not self.client:
             _LOGGER.error("MQTT не подключен")
             return False
@@ -99,7 +95,7 @@ class OrionMQTTClient:
         return True
 
     async def send_command_and_wait(self, command: str, timeout: float = 0.5):
-        """Отправить команду и дождаться ответа"""
+        """Отправить команду и дождаться ответа."""
         if not self._connected or not self.client:
             _LOGGER.error("MQTT не подключен")
             return None
