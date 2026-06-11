@@ -28,6 +28,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["entry_id"] = entry.entry_id
     hass.data[DOMAIN]["scan_in_progress"] = False
     hass.data[DOMAIN]["polling_started"] = False
+    hass.data[DOMAIN]["scan_complete"] = False
     
     def handle_message(data):
         if isinstance(data, str):
@@ -94,6 +95,7 @@ async def scan_orion_devices(hass, mqtt_client):
     _LOGGER.info(f"Опрос завершен. Orion: {orion_count}, DPLS: {dpls_count}")
     
     hass.data[DOMAIN]["scan_in_progress"] = False
+    hass.data[DOMAIN]["scan_complete"] = True
     
     # Запускаем циклический опрос статуса и АЦП после завершения сканирования
     if not hass.data[DOMAIN].get("polling_started"):
@@ -105,13 +107,12 @@ async def scan_dpls_line(hass, mqtt_client, kdl_address):
     """Синхронное сканирование DPLS линии (адреса 1-127) с повтором при отсутствии ответа"""
     
     _LOGGER.info(f"Сканирование DPLS для КДЛ {kdl_address}")
-    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Опрос DPLS: КДЛ {kdl_address}")
+    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование DPLS: КДЛ {kdl_address}")
     
     for dpls_addr in range(1, 128):
-        async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Опрос DPLS: КДЛ {kdl_address}, адрес {dpls_addr} из 127")
+        async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование DPLS: КДЛ {kdl_address}, адрес {dpls_addr} из 127")
         command = f"{kdl_address};6;0;57;{dpls_addr};1"
         
-        # Повторяем запрос до 3 раз, если нет ответа
         response = None
         for attempt in range(3):
             response = await mqtt_client.send_command_and_wait(command, expected_rsp_type=RSP_DPLS, timeout=2.0)
@@ -216,25 +217,23 @@ async def start_polling(hass, mqtt_client):
                 dpls_address = device_info.get("dpls_address")
                 
                 if kdl_address and dpls_address:
-                    # 1. Опрос статуса (команда 25)
                     command_status = f"{kdl_address};6;0;25;{dpls_address};0"
                     response = await mqtt_client.send_command_and_wait(command_status, expected_rsp_type=RSP_STATUS, timeout=2.0)
                     
                     if response:
                         await process_status_response(hass, response, device_key)
                     
-                    await asyncio.sleep(0.5)  # Пауза между статусом и АЦП
+                    await asyncio.sleep(0.5)
                     
-                    # 2. Опрос АЦП (команда 27)
                     command_adc = f"{kdl_address};6;0;27;{dpls_address};0"
                     response = await mqtt_client.send_command_and_wait(command_adc, expected_rsp_type=RSP_ADC, timeout=2.0)
                     
                     if response:
                         await process_adc_response(hass, response, device_key)
                     
-                    await asyncio.sleep(1.0)  # Пауза перед следующим устройством
+                    await asyncio.sleep(1.0)
         
-        await asyncio.sleep(10)  # Пауза перед новым циклом
+        await asyncio.sleep(10)
 
 
 async def process_status_response(hass, response, device_key):
@@ -252,7 +251,6 @@ async def process_status_response(hass, response, device_key):
             dpls_devices[device_key]["status_code"] = status_code
             dpls_devices[device_key]["status_text"] = status_text
             
-            # Обновляем сенсор
             for entity in hass.data[DOMAIN].get("dpls_entities", []):
                 if hasattr(entity, 'device_key') and entity.device_key == device_key:
                     entity.update_status(status_code, status_text)
@@ -274,7 +272,6 @@ async def process_adc_response(hass, response, device_key):
         if device_key in dpls_devices:
             dpls_devices[device_key]["adc_value"] = adc_value
             
-            # Обновляем сенсор
             for entity in hass.data[DOMAIN].get("dpls_entities", []):
                 if hasattr(entity, 'device_key') and entity.device_key == device_key:
                     entity.update_adc(adc_value)
