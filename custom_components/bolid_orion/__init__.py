@@ -102,7 +102,7 @@ async def scan_orion_devices(hass, mqtt_client):
 
 
 async def scan_dpls_line(hass, mqtt_client, kdl_address):
-    """Синхронное сканирование DPLS линии (адреса 1-127)"""
+    """Синхронное сканирование DPLS линии (адреса 1-127) с повтором при отсутствии ответа"""
     
     _LOGGER.info(f"Сканирование DPLS для КДЛ {kdl_address}")
     async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование DPLS: КДЛ {kdl_address}")
@@ -111,7 +111,13 @@ async def scan_dpls_line(hass, mqtt_client, kdl_address):
         async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование DPLS: КДЛ {kdl_address}, адрес {dpls_addr} из 127")
         command = f"{kdl_address};6;0;57;{dpls_addr};1"
         
-        response = await mqtt_client.send_command_and_wait(command, expected_rsp_type=RSP_DPLS, timeout=2.0)
+        # Повторяем запрос до 3 раз, если нет ответа
+        response = None
+        for attempt in range(3):
+            response = await mqtt_client.send_command_and_wait(command, expected_rsp_type=RSP_DPLS, timeout=2.0)
+            if response is not None:
+                break
+            _LOGGER.debug(f"Повтор {attempt + 1} для адреса {dpls_addr} (КДЛ {kdl_address})")
         
         if response:
             await process_dpls_response(hass, response, kdl_address, dpls_addr)
