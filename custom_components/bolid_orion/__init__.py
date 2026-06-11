@@ -69,11 +69,11 @@ async def scan_orion_devices(hass, mqtt_client):
         return
     
     hass.data[DOMAIN]["scan_in_progress"] = True
-    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, "Сканирование Orion: подготовка...")
-    _LOGGER.info("Начало сканирования Orion (адреса 1-127)")
+    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, "Опрос Orion: подготовка...")
+    _LOGGER.info("Начало опроса Orion (адреса 1-127)")
     
     for addr in range(1, 128):
-        async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование Orion: адрес {addr} из 127")
+        async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Опрос Orion: адрес {addr} из 127")
         command = f"{addr};6;0;13;0;0"
         response = await mqtt_client.send_command_and_wait(command, expected_rsp_type=RSP_ORION, timeout=2.0)
         
@@ -82,16 +82,16 @@ async def scan_orion_devices(hass, mqtt_client):
         
         await asyncio.sleep(0.1)
     
-    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование Orion завершено. Найдено: {len(hass.data[DOMAIN]['orion_devices'])}")
-    _LOGGER.info(f"Сканирование Orion завершено. Найдено: {len(hass.data[DOMAIN]['orion_devices'])}")
+    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Опрос Orion завершен. Найдено: {len(hass.data[DOMAIN]['orion_devices'])}")
+    _LOGGER.info(f"Опрос Orion завершен. Найдено: {len(hass.data[DOMAIN]['orion_devices'])}")
     
     for kdl_addr in hass.data[DOMAIN]["kdl_addresses"]:
         await scan_dpls_line(hass, mqtt_client, kdl_addr)
     
     orion_count = len(hass.data[DOMAIN]["orion_devices"])
     dpls_count = len(hass.data[DOMAIN]["dpls_devices"])
-    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование завершено. Orion: {orion_count}, DPLS: {dpls_count}")
-    _LOGGER.info(f"Сканирование завершено. Orion: {orion_count}, DPLS: {dpls_count}")
+    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Опрос завершен. Orion: {orion_count}, DPLS: {dpls_count}")
+    _LOGGER.info(f"Опрос завершен. Orion: {orion_count}, DPLS: {dpls_count}")
     
     hass.data[DOMAIN]["scan_in_progress"] = False
     
