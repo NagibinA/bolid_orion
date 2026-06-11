@@ -7,7 +7,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 
 from .const import DOMAIN, ORION_DEVICE_TYPES, DPLS_DEVICE_TYPES, STATUS_CODES
-from .const import RSP_ORION, RSP_DPLS, RSP_STATUS, SIGNAL_STATUS_UPDATE
+from .const import RSP_ORION, RSP_DPLS, RSP_STATUS, RSP_ADC, SIGNAL_STATUS_UPDATE
 from .mqtt_client import OrionMQTTClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["mqtt_client"] = mqtt_client
     hass.data[DOMAIN]["orion_devices"] = {}
     hass.data[DOMAIN]["dpls_devices"] = {}
-    hass.data[DOMAIN]["dpls_entities"] = []  # ← сохраняем ссылки на сенсоры
+    hass.data[DOMAIN]["dpls_entities"] = []
     hass.data[DOMAIN]["kdl_addresses"] = []
     hass.data[DOMAIN]["entry_id"] = entry.entry_id
     hass.data[DOMAIN]["scan_in_progress"] = False
@@ -95,10 +95,10 @@ async def scan_orion_devices(hass, mqtt_client):
     
     hass.data[DOMAIN]["scan_in_progress"] = False
     
-    # Запускаем циклический опрос статуса ТОЛЬКО после завершения сканирования
+    # Запускаем циклический опрос статуса и АЦП после завершения сканирования
     if not hass.data[DOMAIN].get("polling_started"):
         hass.data[DOMAIN]["polling_started"] = True
-        await start_status_polling(hass, mqtt_client)
+        await start_polling(hass, mqtt_client)
 
 
 async def scan_dpls_line(hass, mqtt_client, kdl_address):
@@ -189,16 +189,17 @@ async def process_dpls_response(hass, response, kdl_address, requested_addr):
                     "dpls_address": requested_addr,
                     "status_code": None,
                     "status_text": None,
+                    "adc_value": None,
                 }
                 async_dispatcher_send(hass, f"{DOMAIN}_new_dpls_device", device_key, dpls_devices[device_key])
     except (ValueError, IndexError) as e:
         _LOGGER.error(f"Ошибка парсинга DPLS: {e}")
 
 
-async def start_status_polling(hass, mqtt_client):
-    """Циклический опрос статуса DPLS устройств (по одному за раз)"""
+async def start_polling(hass, mqtt_client):
+    """Циклический опрос статуса и АЦП DPLS устройств (по одному за раз)"""
     
-    _LOGGER.info("Запуск циклического опроса статуса DPLS устройств")
+    _LOGGER.info("Запуск циклического опроса статуса и АЦП DPLS устройств")
     
     while True:
         dpls_devices = hass.data[DOMAIN].get("dpls_devices", {})
@@ -209,15 +210,25 @@ async def start_status_polling(hass, mqtt_client):
                 dpls_address = device_info.get("dpls_address")
                 
                 if kdl_address and dpls_address:
-                    command = f"{kdl_address};6;0;25;{dpls_address};0"
-                    response = await mqtt_client.send_command_and_wait(command, expected_rsp_type=RSP_STATUS, timeout=2.0)
+                    # 1. Опрос статуса (команда 25)
+                    command_status = f"{kdl_address};6;0;25;{dpls_address};0"
+                    response = await mqtt_client.send_command_and_wait(command_status, expected_rsp_type=RSP_STATUS, timeout=2.0)
                     
                     if response:
                         await process_status_response(hass, response, device_key)
                     
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.5)  # Пауза между статусом и АЦП
+                    
+                    # 2. Опрос АЦП (команда 27)
+                    command_adc = f"{kdl_address};6;0;27;{dpls_address};0"
+                    response = await mqtt_client.send_command_and_wait(command_adc, expected_rsp_type=RSP_ADC, timeout=2.0)
+                    
+                    if response:
+                        await process_adc_response(hass, response, device_key)
+                    
+                    await asyncio.sleep(1.0)  # Пауза перед следующим устройством
         
-        await asyncio.sleep(10)
+        await asyncio.sleep(10)  # Пауза перед новым циклом
 
 
 async def process_status_response(hass, response, device_key):
@@ -230,21 +241,40 @@ async def process_status_response(hass, response, device_key):
         status_code = int(parts[4])
         status_text = STATUS_CODES.get(status_code, f"Неизвестно")
         
-        _LOGGER.info(f"Статус DPLS {device_key}: код {status_code} -> {status_text}")
-        
         dpls_devices = hass.data[DOMAIN]["dpls_devices"]
         if device_key in dpls_devices:
             dpls_devices[device_key]["status_code"] = status_code
             dpls_devices[device_key]["status_text"] = status_text
             
-            # Обновляем сенсор напрямую
+            # Обновляем сенсор
             for entity in hass.data[DOMAIN].get("dpls_entities", []):
                 if hasattr(entity, 'device_key') and entity.device_key == device_key:
                     entity.update_status(status_code, status_text)
-                    _LOGGER.info(f"Сенсор {device_key} обновлён: {status_text}")
                     break
     except (ValueError, IndexError) as e:
         _LOGGER.error(f"Ошибка парсинга статуса: {e}")
+
+
+async def process_adc_response(hass, response, device_key):
+    """Обработка ответа на команду 27 (АЦП)"""
+    parts = response.strip().split()
+    if len(parts) < 5:
+        return
+    
+    try:
+        adc_value = int(parts[4])
+        
+        dpls_devices = hass.data[DOMAIN]["dpls_devices"]
+        if device_key in dpls_devices:
+            dpls_devices[device_key]["adc_value"] = adc_value
+            
+            # Обновляем сенсор
+            for entity in hass.data[DOMAIN].get("dpls_entities", []):
+                if hasattr(entity, 'device_key') and entity.device_key == device_key:
+                    entity.update_adc(adc_value)
+                    break
+    except (ValueError, IndexError) as e:
+        _LOGGER.error(f"Ошибка парсинга АЦП: {e}")
 
 
 async def process_message(hass, data):
@@ -290,3 +320,22 @@ async def process_message(hass, data):
                         break
         except (ValueError, IndexError) as e:
             _LOGGER.error(f"Ошибка парсинга статуса: {e}")
+    
+    elif rsp_type == RSP_ADC and len(parts) >= 5:
+        try:
+            kdl_address = int(parts[0])
+            dpls_addr = int(parts[3])
+            adc_value = int(parts[4])
+            
+            device_key = f"{kdl_address}_{dpls_addr}"
+            
+            dpls_devices = hass.data[DOMAIN].get("dpls_devices", {})
+            if device_key in dpls_devices:
+                dpls_devices[device_key]["adc_value"] = adc_value
+                
+                for entity in hass.data[DOMAIN].get("dpls_entities", []):
+                    if hasattr(entity, 'device_key') and entity.device_key == device_key:
+                        entity.update_adc(adc_value)
+                        break
+        except (ValueError, IndexError) as e:
+            _LOGGER.error(f"Ошибка парсинга АЦП: {e}")
