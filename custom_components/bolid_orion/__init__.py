@@ -4,6 +4,7 @@ import asyncio
 import logging
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 
 from .const import DOMAIN, ORION_DEVICE_TYPES, DPLS_DEVICE_TYPES, STATUS_CODES
@@ -29,6 +30,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["scan_in_progress"] = False
     hass.data[DOMAIN]["polling_started"] = False
     hass.data[DOMAIN]["scan_complete"] = False
+    hass.data[DOMAIN]["polling_task"] = None
     
     def handle_message(data):
         if isinstance(data, str):
@@ -51,6 +53,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Выгрузка интеграции"""
     
+    if hass.data[DOMAIN].get("polling_task") is not None:
+        hass.data[DOMAIN]["polling_started"] = False
+        hass.data[DOMAIN]["polling_task"].cancel()
+        await asyncio.sleep(1)
+    
     mqtt_client = hass.data[DOMAIN].get("mqtt_client")
     if mqtt_client:
         await mqtt_client.disconnect()
@@ -61,6 +68,19 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data.pop(DOMAIN, None)
     
     return unload_ok
+
+
+async def restart_polling(hass, mqtt_client):
+    """Перезапуск циклического опроса"""
+    
+    if hass.data[DOMAIN].get("polling_task") is not None:
+        hass.data[DOMAIN]["polling_started"] = False
+        hass.data[DOMAIN]["polling_task"].cancel()
+        await asyncio.sleep(1)
+    
+    hass.data[DOMAIN]["polling_started"] = False
+    hass.data[DOMAIN]["polling_task"] = None
+    await start_polling(hass, mqtt_client)
 
 
 async def scan_orion_devices(hass, mqtt_client):
@@ -97,10 +117,10 @@ async def scan_orion_devices(hass, mqtt_client):
     hass.data[DOMAIN]["scan_in_progress"] = False
     hass.data[DOMAIN]["scan_complete"] = True
     
-    # Запускаем циклический опрос статуса и АЦП после завершения сканирования
     if not hass.data[DOMAIN].get("polling_started"):
         hass.data[DOMAIN]["polling_started"] = True
-        await start_polling(hass, mqtt_client)
+        task = asyncio.create_task(start_polling(hass, mqtt_client))
+        hass.data[DOMAIN]["polling_task"] = task
 
 
 async def scan_dpls_line(hass, mqtt_client, kdl_address):
@@ -204,15 +224,19 @@ async def process_dpls_response(hass, response, kdl_address, requested_addr):
 
 
 async def start_polling(hass, mqtt_client):
-    """Циклический опрос статуса и АЦП DPLS устройств (по одному за раз)"""
+    """Циклический опрос статуса и АЦП DPLS устройств"""
     
     _LOGGER.info("Запуск циклического опроса статуса и АЦП DPLS устройств")
     
-    while True:
+    while hass.data[DOMAIN].get("polling_started", False):
         dpls_devices = hass.data[DOMAIN].get("dpls_devices", {})
         
         if dpls_devices:
-            for device_key, device_info in dpls_devices.items():
+            for device_key in list(dpls_devices.keys()):
+                device_info = dpls_devices.get(device_key)
+                if not device_info:
+                    continue
+                    
                 kdl_address = device_info.get("kdl_address")
                 dpls_address = device_info.get("dpls_address")
                 
