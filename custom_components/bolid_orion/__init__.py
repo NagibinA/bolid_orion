@@ -26,6 +26,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["kdl_addresses"] = []
     hass.data[DOMAIN]["entry_id"] = entry.entry_id
     hass.data[DOMAIN]["scan_in_progress"] = False
+    hass.data[DOMAIN]["polling_started"] = False
     
     def handle_message(data):
         if isinstance(data, str):
@@ -41,8 +42,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await scan_orion_devices(hass, mqtt_client)
     
     entry.async_create_background_task(hass, delayed_scan(), "bolid_orion_scan")
-    
-    entry.async_create_background_task(hass, start_status_polling(hass, mqtt_client), "bolid_orion_status_polling")
     
     return True
 
@@ -85,6 +84,7 @@ async def scan_orion_devices(hass, mqtt_client):
     async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование Orion завершено. Найдено: {len(hass.data[DOMAIN]['orion_devices'])}")
     _LOGGER.info(f"Сканирование Orion завершено. Найдено: {len(hass.data[DOMAIN]['orion_devices'])}")
     
+    # Сканируем DPLS для каждого найденного КДЛ
     for kdl_addr in hass.data[DOMAIN]["kdl_addresses"]:
         await scan_dpls_line(hass, mqtt_client, kdl_addr)
     
@@ -94,6 +94,11 @@ async def scan_orion_devices(hass, mqtt_client):
     _LOGGER.info(f"Сканирование завершено. Orion: {orion_count}, DPLS: {dpls_count}")
     
     hass.data[DOMAIN]["scan_in_progress"] = False
+    
+    # Запускаем циклический опрос статуса ТОЛЬКО после завершения сканирования
+    if not hass.data[DOMAIN].get("polling_started"):
+        hass.data[DOMAIN]["polling_started"] = True
+        await start_status_polling(hass, mqtt_client)
 
 
 async def scan_dpls_line(hass, mqtt_client, kdl_address):
@@ -161,6 +166,10 @@ async def process_dpls_response(hass, response, kdl_address, requested_addr):
         return
     
     try:
+        rsp_type = int(parts[2])
+        if rsp_type != RSP_DPLS:
+            return
+        
         device_exists = int(parts[3])
         dpls_type = int(parts[4])
         
@@ -189,7 +198,6 @@ async def process_dpls_response(hass, response, kdl_address, requested_addr):
 async def start_status_polling(hass, mqtt_client):
     """Циклический опрос статуса DPLS устройств (по одному за раз)"""
     
-    await asyncio.sleep(15)
     _LOGGER.info("Запуск циклического опроса статуса DPLS устройств")
     
     while True:
