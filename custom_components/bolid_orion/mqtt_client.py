@@ -48,7 +48,7 @@ class OrionMQTTClient:
             self.client.subscribe(TOPIC_ANSWER)
             _LOGGER.info(f"Подключен к MQTT брокеру {self.config['broker']}")
         else:
-            _LOGGER.error("Не удалось подключиться к МQTT брокеру")
+            _LOGGER.error("Не удалось подключиться к MQTT брокеру")
 
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
@@ -66,27 +66,22 @@ class OrionMQTTClient:
         payload = msg.payload.decode()
         _LOGGER.debug(f"Получено: {msg.topic} -> {payload}")
         
-        # Проверяем, есть ли ожидающий Future
         if self._pending:
             parts = payload.strip().split()
             if len(parts) >= 3:
                 try:
                     rsp_type = int(parts[2])
-                    # Берём единственный Future
                     cmd_id = next(iter(self._pending))
                     ctx = self._pending[cmd_id]
                     expected_type = ctx.get("expected_rsp_type")
                     
-                    # Если тип ответа совпадает с ожидаемым
                     if rsp_type == expected_type:
                         ctx["future"].set_result(payload)
                         del self._pending[cmd_id]
                         return
-                    # Иначе игнорируем и ждём дальше
                 except (ValueError, IndexError) as e:
                     _LOGGER.error(f"Ошибка парсинга: {e}")
         
-        # Для остальных сообщений (не ожидаемых)
         dispatcher_send(self.hass, f"{DOMAIN}_message", {"payload": payload})
 
     async def disconnect(self):
@@ -113,7 +108,6 @@ class OrionMQTTClient:
             _LOGGER.error("MQTT не подключен")
             return None
         
-        # Очищаем старые Future
         self._pending.clear()
         
         future = asyncio.Future()
