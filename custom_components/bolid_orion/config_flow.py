@@ -12,12 +12,9 @@ DATA_SCHEMA = vol.Schema({
 })
 
 class BolidOrionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Config Flow для Bolid Orion"""
-
     VERSION = 1
 
     async def async_step_user(self, user_input=None):
-        """Шаг настройки"""
         if user_input is not None:
             return self.async_create_entry(
                 title=f"Bolid Orion ({user_input['broker']})",
