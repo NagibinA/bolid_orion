@@ -15,11 +15,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
     
     entities = []
     
-    # Orion устройства
     for address, info in hass.data[DOMAIN].get("orion_devices", {}).items():
         entities.append(OrionDeviceSensor(address, info))
     
-    # DPLS устройства
     for device_key, info in hass.data[DOMAIN].get("dpls_devices", {}).items():
         sensor = DPLSDeviceSensor(device_key, info)
         entities.append(sensor)
@@ -37,8 +35,24 @@ async def async_setup_entry(hass, entry, async_add_entities):
         hass.data[DOMAIN]["dpls_entities"].append(sensor)
         async_add_entities([sensor])
     
+    @callback
+    def update_dpls_status(device_key, status_code, status_text):
+        for entity in hass.data[DOMAIN].get("dpls_entities", []):
+            if entity.device_key == device_key:
+                entity.update_status(status_code, status_text)
+                return
+    
+    @callback
+    def update_dpls_adc(device_key, adc_value):
+        for entity in hass.data[DOMAIN].get("dpls_entities", []):
+            if entity.device_key == device_key:
+                entity.update_adc(adc_value)
+                return
+    
     async_dispatcher_connect(hass, f"{DOMAIN}_new_orion_device", add_orion)
     async_dispatcher_connect(hass, f"{DOMAIN}_new_dpls_device", add_dpls)
+    async_dispatcher_connect(hass, f"{DOMAIN}_update_dpls_status", update_dpls_status)
+    async_dispatcher_connect(hass, f"{DOMAIN}_update_dpls_adc", update_dpls_adc)
 
 
 class OrionDeviceSensor(SensorEntity):
@@ -60,13 +74,19 @@ class DPLSDeviceSensor(SensorEntity):
         self.device_key = device_key
         self._attr_name = info["name"]
         self._attr_unique_id = f"{DOMAIN}_dpls_{device_key}"
-        self._attr_native_value = info["name"]
+        
+        status_text = info.get("status_text")
+        if status_text:
+            self._attr_native_value = status_text
+        else:
+            self._attr_native_value = info["name"]
+        
         self._attr_extra_state_attributes = {
+            "device_name": info["name"],
             "kdl_address": info.get("kdl_address"),
             "dpls_address": info.get("dpls_address"),
             "type_code": info.get("type_code", 0),
             "status_code": info.get("status_code"),
-            "status_text": info.get("status_text"),
             "adc_value": info.get("adc_value"),
         }
         self._attr_should_poll = False
@@ -74,12 +94,10 @@ class DPLSDeviceSensor(SensorEntity):
     @callback
     def update_status(self, status_code, status_text):
         self._attr_extra_state_attributes["status_code"] = status_code
-        self._attr_extra_state_attributes["status_text"] = status_text
+        self._attr_native_value = status_text
         self.async_write_ha_state()
-        _LOGGER.debug(f"Сенсор {self.device_key} обновлён статус: {status_code} -> {status_text}")
     
     @callback
     def update_adc(self, adc_value):
         self._attr_extra_state_attributes["adc_value"] = adc_value
         self.async_write_ha_state()
-        _LOGGER.debug(f"Сенсор {self.device_key} обновлён АЦП: {adc_value}")
