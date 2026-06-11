@@ -23,7 +23,6 @@ async def async_setup_entry(hass, entry, async_add_entities):
     for device_key, info in hass.data[DOMAIN].get("dpls_devices", {}).items():
         sensor = DPLSDeviceSensor(device_key, info)
         entities.append(sensor)
-        # Сохраняем ссылку на сенсор для прямого обновления
         hass.data[DOMAIN]["dpls_entities"].append(sensor)
     
     async_add_entities(entities)
@@ -68,13 +67,19 @@ class DPLSDeviceSensor(SensorEntity):
             "type_code": info.get("type_code", 0),
             "status_code": info.get("status_code"),
             "status_text": info.get("status_text"),
+            "adc_value": info.get("adc_value"),
         }
         self._attr_should_poll = False
     
     @callback
     def update_status(self, status_code, status_text):
-        """Прямое обновление атрибутов"""
         self._attr_extra_state_attributes["status_code"] = status_code
         self._attr_extra_state_attributes["status_text"] = status_text
         self.async_write_ha_state()
-        _LOGGER.debug(f"Сенсор {self.device_key} обновлён: {status_code} -> {status_text}")
+        _LOGGER.debug(f"Сенсор {self.device_key} обновлён статус: {status_code} -> {status_text}")
+    
+    @callback
+    def update_adc(self, adc_value):
+        self._attr_extra_state_attributes["adc_value"] = adc_value
+        self.async_write_ha_state()
+        _LOGGER.debug(f"Сенсор {self.device_key} обновлён АЦП: {adc_value}")
