@@ -4,6 +4,7 @@ import logging
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.util import slugify
 
 from .const import DOMAIN
 
@@ -59,7 +60,7 @@ class OrionDeviceSensor(SensorEntity):
     def __init__(self, address, info):
         self.address = address
         self._attr_name = info["name"]
-        self._attr_unique_id = f"{DOMAIN}_orion_{address}"
+        self._attr_unique_id = slugify(f"{DOMAIN}_orion_{address}")
         self._attr_native_value = info["name"]
         self._attr_extra_state_attributes = {
             "address": address,
@@ -73,7 +74,7 @@ class DPLSDeviceSensor(SensorEntity):
     def __init__(self, device_key, info):
         self.device_key = device_key
         self._attr_name = info["name"]
-        self._attr_unique_id = f"{DOMAIN}_dpls_{device_key}"
+        self._attr_unique_id = slugify(f"{DOMAIN}_dpls_{device_key}")
         
         status_text = info.get("status_text")
         if status_text:
