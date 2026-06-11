@@ -42,6 +42,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     
     entry.async_create_background_task(hass, delayed_scan(), "bolid_orion_scan")
     
+    entry.async_create_background_task(hass, start_status_polling(hass, mqtt_client), "bolid_orion_status_polling")
+    
     return True
 
 
@@ -184,8 +186,55 @@ async def process_dpls_response(hass, response, kdl_address, requested_addr):
         _LOGGER.error(f"Ошибка парсинга DPLS: {e}")
 
 
+async def start_status_polling(hass, mqtt_client):
+    """Циклический опрос статуса DPLS устройств (по одному за раз)"""
+    
+    await asyncio.sleep(15)
+    _LOGGER.info("Запуск циклического опроса статуса DPLS устройств")
+    
+    while True:
+        dpls_devices = hass.data[DOMAIN].get("dpls_devices", {})
+        
+        if dpls_devices:
+            for device_key, device_info in dpls_devices.items():
+                kdl_address = device_info.get("kdl_address")
+                dpls_address = device_info.get("dpls_address")
+                
+                if kdl_address and dpls_address:
+                    command = f"{kdl_address};6;0;25;{dpls_address};0"
+                    response = await mqtt_client.send_command_and_wait(command, expected_rsp_type=RSP_STATUS, timeout=5.0)
+                    
+                    if response:
+                        await process_status_response(hass, response, device_key)
+                    
+                    await asyncio.sleep(0.5)
+        
+        await asyncio.sleep(10)
+
+
+async def process_status_response(hass, response, device_key):
+    """Обработка ответа на команду 25 (статус)"""
+    parts = response.strip().split()
+    if len(parts) < 5:
+        return
+    
+    try:
+        status_code = int(parts[4])
+        status_text = STATUS_CODES.get(status_code, f"Неизвестно")
+        
+        _LOGGER.debug(f"Статус DPLS {device_key}: {status_text} (код {status_code})")
+        
+        dpls_devices = hass.data[DOMAIN]["dpls_devices"]
+        if device_key in dpls_devices:
+            dpls_devices[device_key]["status_code"] = status_code
+            dpls_devices[device_key]["status_text"] = status_text
+            async_dispatcher_send(hass, f"{DOMAIN}_update_dpls_status", device_key, status_code, status_text)
+    except (ValueError, IndexError) as e:
+        _LOGGER.error(f"Ошибка парсинга статуса: {e}")
+
+
 async def process_message(hass, data):
-    """Обработка ответов (в основном для статуса)"""
+    """Обработка ответов (для неожиданных сообщений)"""
     
     if DOMAIN not in hass.data:
         return
@@ -207,7 +256,6 @@ async def process_message(hass, data):
     except:
         return
     
-    # ========== СТАТУС DPLS (команда 25) ==========
     if rsp_type == RSP_STATUS and len(parts) >= 5:
         try:
             kdl_address = int(parts[0])
@@ -216,8 +264,6 @@ async def process_message(hass, data):
             
             device_key = f"{kdl_address}_{dpls_addr}"
             status_text = STATUS_CODES.get(status_code, f"Неизвестно")
-            
-            _LOGGER.debug(f"Статус DPLS: КДЛ {kdl_address}, DPLS {dpls_addr} -> {status_text}")
             
             dpls_devices = hass.data[DOMAIN].get("dpls_devices", {})
             if device_key in dpls_devices:
