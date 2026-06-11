@@ -102,8 +102,7 @@ class OrionMQTTClient:
         _LOGGER.debug(f"Команда отправлена: {command}")
         return True
 
-    async def send_command_and_wait(self, command: str, expected_rsp_type: int, timeout: float = 5.0):
-        """Отправить команду и дождаться ответа с определённым rsp_type (таймаут 5 секунд)"""
+    async def send_command_and_wait(self, command: str, expected_rsp_type: int, timeout: float = 2.0):
         if not self._connected or not self.client:
             _LOGGER.error("MQTT не подключен")
             return None
