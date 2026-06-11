@@ -21,7 +21,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
     
     # DPLS устройства
     for device_key, info in hass.data[DOMAIN].get("dpls_devices", {}).items():
-        entities.append(DPLSDeviceSensor(device_key, info))
+        sensor = DPLSDeviceSensor(device_key, info)
+        entities.append(sensor)
+        # Сохраняем ссылку на сенсор для прямого обновления
+        hass.data[DOMAIN]["dpls_entities"].append(sensor)
     
     async_add_entities(entities)
     
@@ -31,18 +34,12 @@ async def async_setup_entry(hass, entry, async_add_entities):
     
     @callback
     def add_dpls(device_key, info):
-        async_add_entities([DPLSDeviceSensor(device_key, info)])
-    
-    @callback
-    def update_dpls_status(device_key, status_code, status_text):
-        for entity in entities:
-            if isinstance(entity, DPLSDeviceSensor) and entity.device_key == device_key:
-                entity.update_status(status_code, status_text)
-                return
+        sensor = DPLSDeviceSensor(device_key, info)
+        hass.data[DOMAIN]["dpls_entities"].append(sensor)
+        async_add_entities([sensor])
     
     async_dispatcher_connect(hass, f"{DOMAIN}_new_orion_device", add_orion)
     async_dispatcher_connect(hass, f"{DOMAIN}_new_dpls_device", add_dpls)
-    async_dispatcher_connect(hass, f"{DOMAIN}_update_dpls_status", update_dpls_status)
 
 
 class OrionDeviceSensor(SensorEntity):
@@ -76,6 +73,8 @@ class DPLSDeviceSensor(SensorEntity):
     
     @callback
     def update_status(self, status_code, status_text):
+        """Прямое обновление атрибутов"""
         self._attr_extra_state_attributes["status_code"] = status_code
         self._attr_extra_state_attributes["status_text"] = status_text
         self.async_write_ha_state()
+        _LOGGER.debug(f"Сенсор {self.device_key} обновлён: {status_code} -> {status_text}")

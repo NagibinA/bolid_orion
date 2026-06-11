@@ -48,7 +48,7 @@ class OrionMQTTClient:
             self.client.subscribe(TOPIC_ANSWER)
             _LOGGER.info(f"Подключен к MQTT брокеру {self.config['broker']}")
         else:
-            _LOGGER.error("Не удалось подключиться к MQTT брокеру")
+            _LOGGER.error("Не удалось подключиться к МQTT брокеру")
 
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
