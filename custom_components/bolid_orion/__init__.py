@@ -105,10 +105,10 @@ async def scan_dpls_line(hass, mqtt_client, kdl_address):
     """Синхронное сканирование DPLS линии (адреса 1-127) с повтором при отсутствии ответа"""
     
     _LOGGER.info(f"Сканирование DPLS для КДЛ {kdl_address}")
-    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование DPLS: КДЛ {kdl_address}")
+    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Опрос DPLS: КДЛ {kdl_address}")
     
     for dpls_addr in range(1, 128):
-        async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование DPLS: КДЛ {kdl_address}, адрес {dpls_addr} из 127")
+        async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Опрос DPLS: КДЛ {kdl_address}, адрес {dpls_addr} из 127")
         command = f"{kdl_address};6;0;57;{dpls_addr};1"
         
         # Повторяем запрос до 3 раз, если нет ответа
