@@ -1,104 +1,79 @@
-"""Сенсоры для Bolid Orion"""
+"""Сенсоры для Bolid Orion Protocol v2.0.0"""
 
 import logging
 from homeassistant.components.sensor import SensorEntity
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.util import slugify
 
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup_entry(hass, entry, async_add_entities):
-    """Настройка сенсоров"""
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback
+):
+    """Настройка сенсоров для интеграции"""
     
-    entities = []
+    device_data = hass.data[DOMAIN].get(entry.entry_id)
+    if not device_data:
+        _LOGGER.error("Устройство не найдено для entry %s", entry.entry_id)
+        return
     
-    for address, info in hass.data[DOMAIN].get("orion_devices", {}).items():
-        entities.append(OrionDeviceSensor(address, info))
+    device = device_data["device"]
     
-    for device_key, info in hass.data[DOMAIN].get("dpls_devices", {}).items():
-        sensor = DPLSDeviceSensor(device_key, info)
-        entities.append(sensor)
-        hass.data[DOMAIN]["dpls_entities"].append(sensor)
+    # Создаем сенсор статуса
+    status_sensor = OrionStatusSensor(device)
+    async_add_entities([status_sensor])
     
-    async_add_entities(entities)
-    
-    @callback
-    def add_orion(address, info):
-        async_add_entities([OrionDeviceSensor(address, info)])
-    
-    @callback
-    def add_dpls(device_key, info):
-        sensor = DPLSDeviceSensor(device_key, info)
-        hass.data[DOMAIN]["dpls_entities"].append(sensor)
-        async_add_entities([sensor])
-    
-    @callback
-    def update_dpls_status(device_key, status_code, status_text):
-        for entity in hass.data[DOMAIN].get("dpls_entities", []):
-            if entity.device_key == device_key:
-                entity.update_status(status_code, status_text)
-                return
-    
-    @callback
-    def update_dpls_adc(device_key, adc_value):
-        for entity in hass.data[DOMAIN].get("dpls_entities", []):
-            if entity.device_key == device_key:
-                entity.update_adc(adc_value)
-                return
-    
-    async_dispatcher_connect(hass, f"{DOMAIN}_new_orion_device", add_orion)
-    async_dispatcher_connect(hass, f"{DOMAIN}_new_dpls_device", add_dpls)
-    async_dispatcher_connect(hass, f"{DOMAIN}_update_dpls_status", update_dpls_status)
-    async_dispatcher_connect(hass, f"{DOMAIN}_update_dpls_adc", update_dpls_adc)
+    _LOGGER.debug("Создан сенсор статуса для %s", device.name)
 
 
-class OrionDeviceSensor(SensorEntity):
-    def __init__(self, address, info):
-        self.address = address
-        self._attr_name = info["name"]
-        self._attr_unique_id = slugify(f"{DOMAIN}_orion_{address}")
-        self._attr_native_value = info["name"]
-        self._attr_extra_state_attributes = {
-            "address": address,
-            "firmware": info.get("firmware", "unknown"),
-            "type_code": info.get("type_code", 0),
-        }
+class OrionStatusSensor(SensorEntity):
+    """Сенсор статуса Orion/DPLS устройства"""
+    
+    def __init__(self, device):
+        """Инициализация сенсора"""
+        self.device = device
+        self._attr_name = f"{device.name} Статус"
+        self._attr_unique_id = f"{device.unique_id}_status"
+        self._attr_device_info = device.device_info
+        self._attr_icon = "mdi:chip"
         self._attr_should_poll = False
-
-
-class DPLSDeviceSensor(SensorEntity):
-    def __init__(self, device_key, info):
-        self.device_key = device_key
-        self._attr_name = info["name"]
-        self._attr_unique_id = slugify(f"{DOMAIN}_dpls_{device_key}")
+        self._attr_native_value = device.state
         
-        status_text = info.get("status_text")
-        if status_text:
-            self._attr_native_value = status_text
-        else:
-            self._attr_native_value = info["name"]
-        
-        self._attr_extra_state_attributes = {
-            "device_name": info["name"],
-            "kdl_address": info.get("kdl_address"),
-            "dpls_address": info.get("dpls_address"),
-            "type_code": info.get("type_code", 0),
-            "status_code": info.get("status_code"),
-            "adc_value": info.get("adc_value"),
-        }
-        self._attr_should_poll = False
+        # Определяем тип устройства для сигнала
+        if hasattr(device, 'address'):  # Orion устройство
+            self._signal = f"{DOMAIN}_orion_{device.address}_update"
+        else:  # DPLS устройство
+            self._signal = f"{DOMAIN}_dpls_{device.kdl_address}_{device.dpls_address}_update"
+    
+    @property
+    def native_value(self):
+        """Текущее значение сенсора"""
+        return self._attr_native_value
+    
+    @property
+    def extra_state_attributes(self):
+        """Дополнительные атрибуты"""
+        return self.device.extra_state_attributes
+    
+    async def async_added_to_hass(self):
+        """Подписка на обновления устройства"""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                self._signal,
+                self._handle_update
+            )
+        )
     
     @callback
-    def update_status(self, status_code, status_text):
-        self._attr_extra_state_attributes["status_code"] = status_code
-        self._attr_native_value = status_text
-        self.async_write_ha_state()
-    
-    @callback
-    def update_adc(self, adc_value):
-        self._attr_extra_state_attributes["adc_value"] = adc_value
+    def _handle_update(self, state: str):
+        """Обновление состояния сенсора"""
+        self._attr_native_value = state
         self.async_write_ha_state()
