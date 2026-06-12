@@ -1,51 +1,58 @@
-"""Интеграция Bolid Orion Protocol"""
+"""Интеграция Bolid Orion Protocol v2.0.0"""
 
 import asyncio
 import logging
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 
-from .const import DOMAIN, ORION_DEVICE_TYPES, DPLS_DEVICE_TYPES, STATUS_CODES
-from .const import RSP_ORION, RSP_DPLS, RSP_STATUS, RSP_ADC, SIGNAL_STATUS_UPDATE
+from .const import DOMAIN
 from .mqtt_client import OrionMQTTClient
+from .device import BolidOrionDevice, BolidDPLSDevice
 
 _LOGGER = logging.getLogger(__name__)
 
+PLATFORMS = ["sensor"]
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Настройка интеграции"""
+    """Настройка интеграции из config entry"""
     
-    mqtt_client = OrionMQTTClient(hass, entry.data)
-    await mqtt_client.connect()
-    
+    # Инициализация данных
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN]["mqtt_client"] = mqtt_client
-    hass.data[DOMAIN]["orion_devices"] = {}
-    hass.data[DOMAIN]["dpls_devices"] = {}
-    hass.data[DOMAIN]["dpls_entities"] = []
-    hass.data[DOMAIN]["kdl_addresses"] = []
-    hass.data[DOMAIN]["entry_id"] = entry.entry_id
-    hass.data[DOMAIN]["scan_in_progress"] = False
-    hass.data[DOMAIN]["polling_started"] = False
-    hass.data[DOMAIN]["scan_complete"] = False
-    hass.data[DOMAIN]["polling_task"] = None
     
-    def handle_message(data):
-        if isinstance(data, str):
-            data = {"payload": data}
-        hass.create_task(process_message(hass, data))
+    # Создаем MQTT клиент (один на всю интеграцию)
+    if "mqtt_client" not in hass.data[DOMAIN]:
+        mqtt_client = OrionMQTTClient(
+            hass,
+            broker=entry.data["broker"],
+            port=entry.data["port"],
+            username=entry.data.get("username"),
+            password=entry.data.get("password")
+        )
+        connected = await mqtt_client.connect()
+        if not connected:
+            _LOGGER.error("Не удалось подключиться к MQTT брокеру")
+            return False
+        hass.data[DOMAIN]["mqtt_client"] = mqtt_client
+        _LOGGER.info("MQTT клиент создан и подключен")
     
-    async_dispatcher_connect(hass, f"{DOMAIN}_message", handle_message)
+    # Создаем устройство в зависимости от типа
+    if entry.data.get("device_category") == "orion":
+        device = BolidOrionDevice(hass, entry)
+    else:
+        device = BolidDPLSDevice(hass, entry)
     
-    await hass.config_entries.async_forward_entry_setups(entry, ["sensor", "binary_sensor"])
+    # Сохраняем устройство
+    hass.data[DOMAIN][entry.entry_id] = {
+        "device": device,
+        "entry_id": entry.entry_id,
+    }
     
-    async def delayed_scan():
-        await asyncio.sleep(10)
-        await scan_orion_devices(hass, mqtt_client)
+    # Регистрируем платформы
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     
-    entry.async_create_background_task(hass, delayed_scan(), "bolid_orion_scan")
+    _LOGGER.info("Устройство %s успешно настроено", device.name)
     
     return True
 
@@ -53,316 +60,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Выгрузка интеграции"""
     
-    if hass.data[DOMAIN].get("polling_task") is not None:
-        hass.data[DOMAIN]["polling_started"] = False
-        hass.data[DOMAIN]["polling_task"].cancel()
-        await asyncio.sleep(1)
-    
-    mqtt_client = hass.data[DOMAIN].get("mqtt_client")
-    if mqtt_client:
-        await mqtt_client.disconnect()
-    
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, ["sensor", "binary_sensor"])
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     
     if unload_ok:
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        _LOGGER.info("Устройство %s выгружено", entry.title)
+    
+    # Если не осталось устройств, отключаем MQTT клиент
+    if not hass.data[DOMAIN]:
+        mqtt_client = hass.data[DOMAIN].get("mqtt_client")
+        if mqtt_client:
+            await mqtt_client.disconnect()
         hass.data.pop(DOMAIN, None)
+        _LOGGER.info("MQTT клиент отключен")
     
     return unload_ok
-
-
-async def restart_polling(hass, mqtt_client):
-    """Перезапуск циклического опроса"""
-    
-    if hass.data[DOMAIN].get("polling_task") is not None:
-        hass.data[DOMAIN]["polling_started"] = False
-        hass.data[DOMAIN]["polling_task"].cancel()
-        await asyncio.sleep(1)
-    
-    hass.data[DOMAIN]["polling_started"] = False
-    hass.data[DOMAIN]["polling_task"] = None
-    await start_polling(hass, mqtt_client)
-
-
-async def scan_orion_devices(hass, mqtt_client):
-    """Сканирование Orion адресов 1-127 (синхронно)"""
-    
-    if hass.data[DOMAIN].get("scan_in_progress"):
-        return
-    
-    hass.data[DOMAIN]["scan_in_progress"] = True
-    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, "Опрос Orion: подготовка...")
-    _LOGGER.info("Начало опроса Orion (адреса 1-127)")
-    
-    for addr in range(1, 128):
-        async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Опрос Orion: адрес {addr} из 127")
-        command = f"{addr};6;0;13;0;0"
-        response = await mqtt_client.send_command_and_wait(command, expected_rsp_type=RSP_ORION, timeout=2.0)
-        
-        if response:
-            await process_orion_response(hass, response, addr)
-        
-        await asyncio.sleep(0.1)
-    
-    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Опрос Orion завершен. Найдено: {len(hass.data[DOMAIN]['orion_devices'])}")
-    _LOGGER.info(f"Опрос Orion завершен. Найдено: {len(hass.data[DOMAIN]['orion_devices'])}")
-    
-    for kdl_addr in hass.data[DOMAIN]["kdl_addresses"]:
-        await scan_dpls_line(hass, mqtt_client, kdl_addr)
-    
-    orion_count = len(hass.data[DOMAIN]["orion_devices"])
-    dpls_count = len(hass.data[DOMAIN]["dpls_devices"])
-    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Опрос завершен. Orion: {orion_count}, DPLS: {dpls_count}")
-    _LOGGER.info(f"Опрос завершен. Orion: {orion_count}, DPLS: {dpls_count}")
-    
-    hass.data[DOMAIN]["scan_in_progress"] = False
-    hass.data[DOMAIN]["scan_complete"] = True
-    
-    if not hass.data[DOMAIN].get("polling_started"):
-        hass.data[DOMAIN]["polling_started"] = True
-        task = asyncio.create_task(start_polling(hass, mqtt_client))
-        hass.data[DOMAIN]["polling_task"] = task
-
-
-async def scan_dpls_line(hass, mqtt_client, kdl_address):
-    """Синхронное сканирование DPLS линии (адреса 1-127) с повтором при отсутствии ответа"""
-    
-    _LOGGER.info(f"Сканирование DPLS для КДЛ {kdl_address}")
-    async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование DPLS: КДЛ {kdl_address}")
-    
-    for dpls_addr in range(1, 128):
-        async_dispatcher_send(hass, SIGNAL_STATUS_UPDATE, f"Сканирование DPLS: КДЛ {kdl_address}, адрес {dpls_addr} из 127")
-        command = f"{kdl_address};6;0;57;{dpls_addr};1"
-        
-        response = None
-        for attempt in range(3):
-            response = await mqtt_client.send_command_and_wait(command, expected_rsp_type=RSP_DPLS, timeout=2.0)
-            if response is not None:
-                break
-            _LOGGER.debug(f"Повтор {attempt + 1} для адреса {dpls_addr} (КДЛ {kdl_address})")
-        
-        if response:
-            await process_dpls_response(hass, response, kdl_address, dpls_addr)
-        
-        await asyncio.sleep(0.1)
-
-
-async def process_orion_response(hass, response, expected_addr):
-    """Обработка ответа на команду 13"""
-    parts = response.strip().split()
-    if len(parts) < 8:
-        return
-    
-    try:
-        address = int(parts[0])
-        if address != expected_addr:
-            return
-        
-        device_type = int(parts[3])
-        byte4 = int(parts[4])
-        byte5 = int(parts[5])
-        devVer = byte4 | (byte5 << 8)
-        major = devVer // 100
-        minor = devVer % 100
-        version = f"{major}.{minor:02d}"
-        
-        device_name = ORION_DEVICE_TYPES.get(device_type, f"Тип {device_type}")
-        
-        _LOGGER.info(f"Найден Orion: адрес {address} -> {device_name}")
-        
-        orion_devices = hass.data[DOMAIN]["orion_devices"]
-        
-        if address not in orion_devices:
-            orion_devices[address] = {
-                "name": device_name,
-                "type_code": device_type,
-                "firmware": version,
-            }
-            async_dispatcher_send(hass, f"{DOMAIN}_new_orion_device", address, orion_devices[address])
-            
-            if device_type == 9 and address not in hass.data[DOMAIN]["kdl_addresses"]:
-                hass.data[DOMAIN]["kdl_addresses"].append(address)
-                _LOGGER.info(f"Добавлен КДЛ адрес {address}")
-    except (ValueError, IndexError) as e:
-        _LOGGER.error(f"Ошибка парсинга Orion: {e}")
-
-
-async def process_dpls_response(hass, response, kdl_address, requested_addr):
-    """Обработка ответа на команду 57"""
-    parts = response.strip().split()
-    if len(parts) < 5:
-        return
-    
-    try:
-        rsp_type = int(parts[2])
-        if rsp_type != RSP_DPLS:
-            return
-        
-        device_exists = int(parts[3])
-        dpls_type = int(parts[4])
-        
-        if device_exists != 0 and dpls_type != 0:
-            device_name = DPLS_DEVICE_TYPES.get(dpls_type, f"Тип {dpls_type}")
-            
-            _LOGGER.info(f"Найден DPLS: КДЛ {kdl_address}, DPLS адрес {requested_addr}, тип {device_name}")
-            
-            dpls_devices = hass.data[DOMAIN]["dpls_devices"]
-            device_key = f"{kdl_address}_{requested_addr}"
-            
-            if device_key not in dpls_devices:
-                dpls_devices[device_key] = {
-                    "name": device_name,
-                    "type_code": dpls_type,
-                    "kdl_address": kdl_address,
-                    "dpls_address": requested_addr,
-                    "status_code": None,
-                    "status_text": None,
-                    "adc_value": None,
-                }
-                async_dispatcher_send(hass, f"{DOMAIN}_new_dpls_device", device_key, dpls_devices[device_key])
-    except (ValueError, IndexError) as e:
-        _LOGGER.error(f"Ошибка парсинга DPLS: {e}")
-
-
-async def start_polling(hass, mqtt_client):
-    """Циклический опрос статуса и АЦП DPLS устройств"""
-    
-    _LOGGER.info("Запуск циклического опроса статуса и АЦП DPLS устройств")
-    
-    while hass.data[DOMAIN].get("polling_started", False):
-        dpls_devices = hass.data[DOMAIN].get("dpls_devices", {})
-        
-        if dpls_devices:
-            for device_key in list(dpls_devices.keys()):
-                device_info = dpls_devices.get(device_key)
-                if not device_info:
-                    continue
-                    
-                kdl_address = device_info.get("kdl_address")
-                dpls_address = device_info.get("dpls_address")
-                
-                if kdl_address and dpls_address:
-                    command_status = f"{kdl_address};6;0;25;{dpls_address};0"
-                    response = await mqtt_client.send_command_and_wait(command_status, expected_rsp_type=RSP_STATUS, timeout=2.0)
-                    
-                    if response:
-                        await process_status_response(hass, response, device_key)
-                    
-                    await asyncio.sleep(0.5)
-                    
-                    command_adc = f"{kdl_address};6;0;27;{dpls_address};0"
-                    response = await mqtt_client.send_command_and_wait(command_adc, expected_rsp_type=RSP_ADC, timeout=2.0)
-                    
-                    if response:
-                        await process_adc_response(hass, response, device_key)
-                    
-                    await asyncio.sleep(1.0)
-        
-        await asyncio.sleep(10)
-
-
-async def process_status_response(hass, response, device_key):
-    """Обработка ответа на команду 25 (статус)"""
-    parts = response.strip().split()
-    if len(parts) < 5:
-        return
-    
-    try:
-        status_code = int(parts[4])
-        status_text = STATUS_CODES.get(status_code, f"Неизвестно")
-        
-        dpls_devices = hass.data[DOMAIN]["dpls_devices"]
-        if device_key in dpls_devices:
-            dpls_devices[device_key]["status_code"] = status_code
-            dpls_devices[device_key]["status_text"] = status_text
-            
-            for entity in hass.data[DOMAIN].get("dpls_entities", []):
-                if hasattr(entity, 'device_key') and entity.device_key == device_key:
-                    entity.update_status(status_code, status_text)
-                    break
-    except (ValueError, IndexError) as e:
-        _LOGGER.error(f"Ошибка парсинга статуса: {e}")
-
-
-async def process_adc_response(hass, response, device_key):
-    """Обработка ответа на команду 27 (АЦП)"""
-    parts = response.strip().split()
-    if len(parts) < 5:
-        return
-    
-    try:
-        adc_value = int(parts[4])
-        
-        dpls_devices = hass.data[DOMAIN]["dpls_devices"]
-        if device_key in dpls_devices:
-            dpls_devices[device_key]["adc_value"] = adc_value
-            
-            for entity in hass.data[DOMAIN].get("dpls_entities", []):
-                if hasattr(entity, 'device_key') and entity.device_key == device_key:
-                    entity.update_adc(adc_value)
-                    break
-    except (ValueError, IndexError) as e:
-        _LOGGER.error(f"Ошибка парсинга АЦП: {e}")
-
-
-async def process_message(hass, data):
-    """Обработка ответов (для неожиданных сообщений)"""
-    
-    if DOMAIN not in hass.data:
-        return
-    
-    if isinstance(data, str):
-        data = {"payload": data}
-    
-    payload = data.get("payload")
-    
-    if not payload:
-        return
-    
-    parts = payload.strip().split()
-    if len(parts) < 5:
-        return
-    
-    try:
-        rsp_type = int(parts[2])
-    except:
-        return
-    
-    if rsp_type == RSP_STATUS and len(parts) >= 5:
-        try:
-            kdl_address = int(parts[0])
-            dpls_addr = int(parts[3])
-            status_code = int(parts[4])
-            
-            device_key = f"{kdl_address}_{dpls_addr}"
-            status_text = STATUS_CODES.get(status_code, f"Неизвестно")
-            
-            dpls_devices = hass.data[DOMAIN].get("dpls_devices", {})
-            if device_key in dpls_devices:
-                dpls_devices[device_key]["status_code"] = status_code
-                dpls_devices[device_key]["status_text"] = status_text
-                
-                for entity in hass.data[DOMAIN].get("dpls_entities", []):
-                    if hasattr(entity, 'device_key') and entity.device_key == device_key:
-                        entity.update_status(status_code, status_text)
-                        break
-        except (ValueError, IndexError) as e:
-            _LOGGER.error(f"Ошибка парсинга статуса: {e}")
-    
-    elif rsp_type == RSP_ADC and len(parts) >= 5:
-        try:
-            kdl_address = int(parts[0])
-            dpls_addr = int(parts[3])
-            adc_value = int(parts[4])
-            
-            device_key = f"{kdl_address}_{dpls_addr}"
-            
-            dpls_devices = hass.data[DOMAIN].get("dpls_devices", {})
-            if device_key in dpls_devices:
-                dpls_devices[device_key]["adc_value"] = adc_value
-                
-                for entity in hass.data[DOMAIN].get("dpls_entities", []):
-                    if hasattr(entity, 'device_key') and entity.device_key == device_key:
-                        entity.update_adc(adc_value)
-                        break
-        except (ValueError, IndexError) as e:
-            _LOGGER.error(f"Ошибка парсинга АЦП: {e}")
