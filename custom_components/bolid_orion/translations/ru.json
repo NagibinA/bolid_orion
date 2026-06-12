@@ -2,21 +2,67 @@
   "config": {
     "step": {
       "user": {
-        "title": "Настройка Bolid Orion",
+        "title": "Настройка MQTT подключения",
         "description": "Введите параметры подключения к MQTT брокеру",
         "data": {
-          "broker": "IP брокера",
+          "broker": "MQTT брокер",
           "port": "Порт",
-          "username": "Логин (опционально)",
-          "password": "Пароль (опционально)"
+          "username": "Имя пользователя",
+          "password": "Пароль"
+        }
+      },
+      "select_category": {
+        "title": "Выбор типа устройства",
+        "description": "Выберите категорию устройства",
+        "data": {
+          "category": "Категория устройства"
+        }
+      },
+      "add_orion": {
+        "title": "Добавление Orion устройства",
+        "description": "Выберите тип устройства и укажите адрес",
+        "data": {
+          "device_type": "Тип устройства",
+          "address": "Адрес (1-127)",
+          "name": "Имя (опционально)"
+        }
+      },
+      "select_kdl": {
+        "title": "Выбор КДЛ",
+        "description": "Выберите КДЛ, к которому подключено DPLS устройство",
+        "data": {
+          "kdl_address": "КДЛ"
+        }
+      },
+      "add_dpls": {
+        "title": "Добавление DPLS устройства",
+        "description": "Выберите тип DPLS устройства и укажите адрес",
+        "data": {
+          "device_type": "Тип устройства",
+          "dpls_address": "Адрес DPLS (1-127)",
+          "name": "Имя (опционально)"
         }
       }
     },
     "error": {
-      "cannot_connect": "Не удалось подключиться к MQTT брокеру"
+      "cannot_connect": "Не удалось подключиться к MQTT брокеру",
+      "address_already_used": "Этот адрес уже используется",
+      "address_out_of_range": "Адрес должен быть от 1 до 127"
     },
     "abort": {
-      "already_configured": "Интеграция уже настроена"
+      "already_configured": "Устройство с таким адресом уже настроено",
+      "no_kdl_devices": "Нет настроенных КДЛ устройств"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Настройки устройства",
+        "data": {
+          "name": "Имя устройства",
+          "scan_interval": "Интервал опроса (секунды)"
+        }
+      }
     }
   }
 }
