@@ -1,274 +1,219 @@
-"""Config Flow для Bolid Orion"""
+"""Config Flow для Bolid Orion Protocol v2.0.0"""
 
-import asyncio
-import logging
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
-from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers.dispatcher import async_dispatcher_send
-from .const import DOMAIN
+from homeassistant.helpers import selector
 
-_LOGGER = logging.getLogger(__name__)
+from .const import DOMAIN, ORION_DEVICE_TYPES, DPLS_DEVICE_TYPES
 
-DATA_SCHEMA = vol.Schema({
-    vol.Required("broker"): str,
-    vol.Required("port", default=1883): int,
+# Схема подключения к MQTT
+MQTT_SCHEMA = vol.Schema({
+    vol.Required("broker", default="localhost"): str,
+    vol.Required("port", default=1883): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
     vol.Optional("username"): str,
     vol.Optional("password"): str,
 })
 
+# Схема для Orion устройства
+ORION_SCHEMA = vol.Schema({
+    vol.Required("device_type"): selector.Selector(
+        {"select": {"options": list(ORION_DEVICE_TYPES.keys()), "mode": "dropdown"}}
+    ),
+    vol.Required("address", default=1): vol.All(vol.Coerce(int), vol.Range(min=1, max=127)),
+    vol.Optional("name"): str,
+})
+
+# Схема для DPLS устройства
+DPLS_SCHEMA = vol.Schema({
+    vol.Required("device_type"): selector.Selector(
+        {"select": {"options": list(DPLS_DEVICE_TYPES.keys()), "mode": "dropdown"}}
+    ),
+    vol.Required("dpls_address", default=1): vol.All(vol.Coerce(int), vol.Range(min=1, max=127)),
+    vol.Optional("name"): str,
+})
+
 
 class BolidOrionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    VERSION = 1
-
+    """Config Flow для Bolid Orion"""
+    
+    VERSION = 2
+    
+    def __init__(self):
+        self._mqtt_config = {}
+        self._selected_kdl = None
+    
     async def async_step_user(self, user_input=None):
+        """Шаг 1: Настройка MQTT"""
+        errors = {}
+        
         if user_input is not None:
-            return self.async_create_entry(
-                title=f"Bolid Orion ({user_input['broker']})",
-                data=user_input
-            )
-        return self.async_show_form(step_id="user", data_schema=DATA_SCHEMA)
-
+            self._mqtt_config = {
+                "broker": user_input["broker"],
+                "port": user_input["port"],
+                "username": user_input.get("username", ""),
+                "password": user_input.get("password", ""),
+            }
+            return await self.async_step_select_category()
+        
+        return self.async_show_form(
+            step_id="user",
+            data_schema=MQTT_SCHEMA,
+            errors=errors
+        )
+    
+    async def async_step_select_category(self, user_input=None):
+        """Шаг 2: Выбор категории устройства"""
+        if user_input is not None:
+            if user_input["category"] == "orion":
+                return await self.async_step_add_orion()
+            else:
+                return await self.async_step_select_kdl()
+        
+        return self.async_show_form(
+            step_id="select_category",
+            data_schema=vol.Schema({
+                vol.Required("category"): vol.In({
+                    "orion": "Orion устройство (прямое подключение)",
+                    "dpls": "DPLS устройство (подключается к КДЛ)"
+                })
+            })
+        )
+    
+    async def async_step_add_orion(self, user_input=None):
+        """Шаг 3a: Добавление Orion устройства"""
+        errors = {}
+        
+        if user_input is not None:
+            address = user_input["address"]
+            
+            # Проверка на дубликат
+            for entry in self._async_current_entries():
+                if entry.data.get("address") == address and entry.data.get("device_category") == "orion":
+                    errors["address"] = "address_already_used"
+                    break
+            
+            if not errors:
+                device_type = int(user_input["device_type"])
+                device_name = ORION_DEVICE_TYPES.get(device_type, f"Тип {device_type}")
+                title = user_input.get("name") or f"{device_name} (адрес {address})"
+                
+                return self.async_create_entry(
+                    title=title,
+                    data={
+                        **self._mqtt_config,
+                        "device_category": "orion",
+                        "device_type": device_type,
+                        "address": address,
+                        "name": user_input.get("name", ""),
+                    }
+                )
+        
+        return self.async_show_form(
+            step_id="add_orion",
+            data_schema=ORION_SCHEMA,
+            errors=errors
+        )
+    
+    async def async_step_select_kdl(self, user_input=None):
+        """Шаг 3b: Выбор КДЛ для DPLS устройства"""
+        
+        # Собираем существующие КДЛ устройства
+        kdl_devices = {}
+        for entry in self._async_current_entries():
+            if entry.data.get("device_category") == "orion" and entry.data.get("device_type") == 9:
+                addr = entry.data["address"]
+                name = entry.data.get("name") or f"КДЛ (адрес {addr})"
+                kdl_devices[str(addr)] = name
+        
+        if not kdl_devices:
+            return self.async_abort(reason="no_kdl_devices")
+        
+        if user_input is not None:
+            self._selected_kdl = int(user_input["kdl_address"])
+            return await self.async_step_add_dpls()
+        
+        schema = vol.Schema({
+            vol.Required("kdl_address"): vol.In(kdl_devices)
+        })
+        
+        return self.async_show_form(
+            step_id="select_kdl",
+            data_schema=schema
+        )
+    
+    async def async_step_add_dpls(self, user_input=None):
+        """Шаг 3c: Добавление DPLS устройства"""
+        errors = {}
+        
+        if user_input is not None:
+            dpls_address = user_input["dpls_address"]
+            
+            # Проверка на дубликат
+            for entry in self._async_current_entries():
+                if (entry.data.get("device_category") == "dpls" and 
+                    entry.data.get("kdl_address") == self._selected_kdl and
+                    entry.data.get("dpls_address") == dpls_address):
+                    errors["dpls_address"] = "address_already_used"
+                    break
+            
+            if not errors:
+                device_type = int(user_input["device_type"])
+                device_name = DPLS_DEVICE_TYPES.get(device_type, f"Тип {device_type}")
+                title = user_input.get("name") or f"{device_name} (КДЛ {self._selected_kdl}, адрес {dpls_address})"
+                
+                return self.async_create_entry(
+                    title=title,
+                    data={
+                        **self._mqtt_config,
+                        "device_category": "dpls",
+                        "device_type": device_type,
+                        "kdl_address": self._selected_kdl,
+                        "dpls_address": dpls_address,
+                        "name": user_input.get("name", ""),
+                    }
+                )
+        
+        return self.async_show_form(
+            step_id="add_dpls",
+            data_schema=DPLS_SCHEMA,
+            errors=errors
+        )
+    
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):
-        return BolidOrionOptionsFlow()
+        """Опции конфигурации"""
+        return BolidOrionOptionsFlow(config_entry)
 
 
 class BolidOrionOptionsFlow(config_entries.OptionsFlow):
-    """Options Flow для управления адресами"""
-
-    def __init__(self):
-        self.device_type = None
-        self.selected_device = None
-        self.free_addresses = []
-
+    """Настройки устройства"""
+    
+    def __init__(self, config_entry):
+        self.config_entry = config_entry
+    
     async def async_step_init(self, user_input=None):
+        """Форма настроек"""
         if user_input is not None:
-            action = user_input.get("action")
-            if action == "change_orion_address":
-                return await self.async_step_select_orion_device()
-            elif action == "change_dpls_address":
-                return await self.async_step_select_dpls_device()
-            elif action == "refresh_free_addresses":
-                await self._refresh_free_addresses()
-                return await self.async_step_init()
-        
-        orion_devices = self.hass.data.get(DOMAIN, {}).get("orion_devices", {})
-        dpls_devices = self.hass.data.get(DOMAIN, {}).get("dpls_devices", {})
-        
-        used_orion = list(orion_devices.keys())
-        used_dpls = [info.get("dpls_address") for info in dpls_devices.values() if info.get("dpls_address")]
-        
-        schema = vol.Schema({
-            vol.Required("action"): vol.In({
-                "change_orion_address": f"Сменить адрес Orion (заняты: {used_orion})",
-                "change_dpls_address": f"Сменить адрес DPLS (заняты: {used_dpls})",
-                "refresh_free_addresses": "Обновить список свободных адресов"
-            })
-        })
-        
-        return self.async_show_form(step_id="init", data_schema=schema)
-    
-    async def async_step_select_orion_device(self, user_input=None):
-        orion_devices = self.hass.data.get(DOMAIN, {}).get("orion_devices", {})
-        
-        if user_input is not None:
-            self.device_type = "orion"
-            self.selected_device = user_input["device"]
-            return await self.async_step_select_new_address()
-        
-        devices_list = {
-            str(addr): f"Адрес {addr}: {info['name']}" 
-            for addr, info in orion_devices.items()
-        }
-        
-        schema = vol.Schema({
-            vol.Required("device"): vol.In(devices_list)
-        })
-        
-        return self.async_show_form(step_id="select_orion_device", data_schema=schema)
-    
-    async def async_step_select_dpls_device(self, user_input=None):
-        dpls_devices = self.hass.data.get(DOMAIN, {}).get("dpls_devices", {})
-        
-        if user_input is not None:
-            self.device_type = "dpls"
-            self.selected_device = user_input["device"]
-            return await self.async_step_select_new_address()
-        
-        devices_list = {}
-        for key, info in dpls_devices.items():
-            kdl = info.get("kdl_address")
-            dpls = info.get("dpls_address")
-            name = info.get("name")
-            devices_list[key] = f"КДЛ {kdl}, DPLS {dpls}: {name}"
-        
-        schema = vol.Schema({
-            vol.Required("device"): vol.In(devices_list)
-        })
-        
-        return self.async_show_form(step_id="select_dpls_device", data_schema=schema)
-    
-    async def async_step_select_new_address(self, user_input=None):
-        if user_input is not None:
-            new_address = int(user_input["new_address"])
-            mqtt_client = self.hass.data.get(DOMAIN, {}).get("mqtt_client")
-            
-            if mqtt_client:
-                if self.device_type == "orion":
-                    old_addr = int(self.selected_device)
-                    command = f"{old_addr};6;0;15;{new_address};{new_address}"
-                    await mqtt_client.send_command(command)
-                    await asyncio.sleep(2)
-                    await self._update_orion_device(old_addr, new_address)
-                else:
-                    parts = self.selected_device.split("_")
-                    kdl_addr = int(parts[0])
-                    old_addr = int(parts[1])
-                    command = f"{kdl_addr};7;0;39;6;{old_addr};{new_address}"
-                    await mqtt_client.send_command(command)
-                    await asyncio.sleep(2)
-                    await self._update_dpls_device(kdl_addr, old_addr, new_address)
-            
+            new_data = {**self.config_entry.data, **user_input}
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, data=new_data
+            )
             return self.async_create_entry(title="", data={})
         
-        await self._refresh_free_addresses()
-        current_addr = self._get_current_address()
-        available = [str(a) for a in self.free_addresses if a != current_addr]
+        schema = {
+            vol.Optional(
+                "name",
+                default=self.config_entry.data.get("name", "")
+            ): str,
+            vol.Optional(
+                "scan_interval",
+                default=self.config_entry.data.get("scan_interval", 30)
+            ): vol.All(vol.Coerce(int), vol.Range(min=5, max=300)),
+        }
         
-        if not available:
-            return self.async_abort(reason="no_free_addresses")
-        
-        schema = vol.Schema({
-            vol.Required("new_address"): vol.In(available)
-        })
-        
-        return self.async_show_form(step_id="select_new_address", data_schema=schema)
-    
-    async def _refresh_free_addresses(self):
-        orion_devices = self.hass.data.get(DOMAIN, {}).get("orion_devices", {})
-        dpls_devices = self.hass.data.get(DOMAIN, {}).get("dpls_devices", {})
-        
-        used_orion = set(orion_devices.keys())
-        used_dpls = set()
-        for info in dpls_devices.values():
-            if info.get("dpls_address"):
-                used_dpls.add(info.get("dpls_address"))
-        
-        all_used = used_orion | used_dpls
-        self.free_addresses = [a for a in range(1, 128) if a not in all_used]
-    
-    def _get_current_address(self):
-        if self.device_type == "orion":
-            return int(self.selected_device)
-        else:
-            parts = self.selected_device.split("_")
-            return int(parts[1])
-    
-    async def _update_orion_device(self, old_addr, new_addr):
-        """Удаление старого Orion устройства и создание нового с новым адресом"""
-        
-        device_registry = dr.async_get(self.hass)
-        entity_registry = er.async_get(self.hass)
-        orion_devices = self.hass.data.get(DOMAIN, {}).get("orion_devices", {})
-        kdl_addresses = self.hass.data.get(DOMAIN, {}).get("kdl_addresses", [])
-        
-        device_info = orion_devices.pop(old_addr, None)
-        
-        if not device_info:
-            _LOGGER.error(f"Устройство с адресом {old_addr} не найдено")
-            return
-        
-        is_kdl = (device_info.get("type_code") == 9)
-        
-        # 1. Удаляем старый сенсор и устройство
-        old_device = device_registry.async_get_device(identifiers={(DOMAIN, f"orion_{old_addr}")})
-        if old_device:
-            entities = er.async_entries_for_device(entity_registry, old_device.id)
-            for entity in entities:
-                entity_registry.async_remove(entity.entity_id)
-                _LOGGER.info(f"Удалена сущность {entity.entity_id}")
-            device_registry.async_remove_device(old_device.id)
-            _LOGGER.info(f"Удалено Orion устройство с адресом {old_addr}")
-        
-        # 2. Если КДЛ — удаляем все его DPLS устройства
-        if is_kdl:
-            dpls_devices = self.hass.data.get(DOMAIN, {}).get("dpls_devices", {})
-            dpls_entities = self.hass.data.get(DOMAIN, {}).get("dpls_entities", [])
-            
-            for key, info in list(dpls_devices.items()):
-                if info.get("kdl_address") == old_addr:
-                    dpls_device = device_registry.async_get_device(identifiers={(DOMAIN, f"dpls_{key}")})
-                    if dpls_device:
-                        dpls_entities_list = er.async_entries_for_device(entity_registry, dpls_device.id)
-                        for dpls_entity in dpls_entities_list:
-                            entity_registry.async_remove(dpls_entity.entity_id)
-                            _LOGGER.info(f"Удалена сущность DPLS {dpls_entity.entity_id}")
-                        device_registry.async_remove_device(dpls_device.id)
-                        _LOGGER.info(f"Удалён DPLS сенсор {key}")
-                    
-                    dpls_devices.pop(key, None)
-                    
-                    for entity_obj in dpls_entities[:]:
-                        if hasattr(entity_obj, 'device_key') and entity_obj.device_key == key:
-                            dpls_entities.remove(entity_obj)
-                            break
-            
-            if old_addr in kdl_addresses:
-                kdl_addresses.remove(old_addr)
-        
-        # 3. Создаём новое устройство с новым адресом
-        device_info["address"] = new_addr
-        orion_devices[new_addr] = device_info
-        async_dispatcher_send(self.hass, f"{DOMAIN}_new_orion_device", new_addr, device_info)
-        _LOGGER.info(f"Создан новый сенсор Orion с адресом {new_addr}")
-        
-        # 4. Если КДЛ — пересканируем DPLS линию через новый адрес
-        if is_kdl:
-            from . import scan_dpls_line
-            mqtt_client = self.hass.data.get(DOMAIN, {}).get("mqtt_client")
-            if mqtt_client:
-                _LOGGER.info(f"Запуск сканирования DPLS для нового КДЛ с адресом {new_addr}")
-                self.hass.async_create_task(scan_dpls_line(self.hass, mqtt_client, new_addr))
-    
-    async def _update_dpls_device(self, kdl_addr, old_addr, new_addr):
-        """Удаление старого DPLS устройства и создание нового с новым адресом"""
-        
-        old_key = f"{kdl_addr}_{old_addr}"
-        new_key = f"{kdl_addr}_{new_addr}"
-        
-        dpls_devices = self.hass.data.get(DOMAIN, {}).get("dpls_devices", {})
-        dpls_entities = self.hass.data.get(DOMAIN, {}).get("dpls_entities", [])
-        
-        device_info = dpls_devices.pop(old_key, None)
-        
-        if not device_info:
-            _LOGGER.error(f"DPLS устройство {old_key} не найдено")
-            return
-        
-        device_registry = dr.async_get(self.hass)
-        entity_registry = er.async_get(self.hass)
-        
-        # 1. Удаляем старый сенсор
-        old_device = device_registry.async_get_device(identifiers={(DOMAIN, f"dpls_{old_key}")})
-        if old_device:
-            entities = er.async_entries_for_device(entity_registry, old_device.id)
-            for entity in entities:
-                entity_registry.async_remove(entity.entity_id)
-                _LOGGER.info(f"Удалена сущность DPLS {entity.entity_id}")
-            device_registry.async_remove_device(old_device.id)
-            _LOGGER.info(f"Удалён DPLS сенсор {old_key}")
-            
-            for entity_obj in dpls_entities[:]:
-                if hasattr(entity_obj, 'device_key') and entity_obj.device_key == old_key:
-                    dpls_entities.remove(entity_obj)
-                    break
-        
-        # 2. Создаём новый сенсор с новым адресом
-        device_info["dpls_address"] = new_addr
-        dpls_devices[new_key] = device_info
-        async_dispatcher_send(self.hass, f"{DOMAIN}_new_dpls_device", new_key, device_info)
-        _LOGGER.info(f"Создан новый DPLS сенсор {new_key}")
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(schema)
+        )
