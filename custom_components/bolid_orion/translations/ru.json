@@ -10,59 +10,55 @@
           "username": "Имя пользователя",
           "password": "Пароль"
         }
-      },
-      "select_category": {
-        "title": "Выбор типа устройства",
-        "description": "Выберите категорию устройства",
+      }
+    },
+    "error": {
+      "cannot_connect": "Не удалось подключиться к MQTT брокеру"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Управление устройствами",
+        "description": "Выберите действие",
         "data": {
-          "category": "Категория устройства"
+          "action": "Действие"
         }
       },
       "add_orion": {
         "title": "Добавление Orion устройства",
-        "description": "Выберите тип устройства и укажите адрес",
+        "description": "Выберите тип и адрес устройства",
         "data": {
           "device_type": "Тип устройства",
-          "address": "Адрес (1-127)",
-          "name": "Имя (опционально)"
+          "address": "Адрес"
         }
       },
       "select_kdl": {
         "title": "Выбор КДЛ",
         "description": "Выберите КДЛ, к которому подключено DPLS устройство",
         "data": {
-          "kdl_address": "КДЛ"
+          "kdl_device_id": "КДЛ устройство"
         }
       },
       "add_dpls": {
         "title": "Добавление DPLS устройства",
-        "description": "Выберите тип DPLS устройства и укажите адрес",
+        "description": "Выберите тип и адрес DPLS устройства",
         "data": {
           "device_type": "Тип устройства",
-          "dpls_address": "Адрес DPLS (1-127)",
-          "name": "Имя (опционально)"
+          "dpls_address": "Адрес DPLS"
         }
       }
     },
     "error": {
-      "cannot_connect": "Не удалось подключиться к MQTT брокеру",
-      "address_already_used": "Этот адрес уже используется",
-      "address_out_of_range": "Адрес должен быть от 1 до 127"
+      "no_free_addresses": "Нет свободных адресов (1-127 все заняты)",
+      "no_kdl_devices": "Нет настроенных КДЛ устройств",
+      "no_free_dpls_addresses": "Нет свободных адресов для DPLS устройств на этом КДЛ",
+      "invalid_data": "Ошибка при добавлении устройства"
     },
     "abort": {
-      "already_configured": "Устройство с таким адресом уже настроено",
-      "no_kdl_devices": "Нет настроенных КДЛ устройств"
-    }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Настройки устройства",
-        "data": {
-          "name": "Имя устройства",
-          "scan_interval": "Интервал опроса (секунды)"
-        }
-      }
+      "no_free_addresses": "Нет свободных адресов",
+      "no_kdl_devices": "Нет настроенных КДЛ",
+      "no_free_dpls_addresses": "Нет свободных DPLS адресов"
     }
   }
 }
